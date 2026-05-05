@@ -1,4 +1,3 @@
-using System.Collections;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -37,15 +36,6 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float crouchBobAmount = 0.009f;
     [SerializeField] private float bobReturnSpeed = 18f;
 
-    [Header("Climbing")]
-    [SerializeField] private float climbCheckDistance = 0.75f;
-    [SerializeField] private float climbTopProbeHeight = 1.05f;
-    [SerializeField] private float climbForwardProbe = 0.34f;
-    [SerializeField] private float climbLandingForwardOffset = 0.18f;
-    [SerializeField] private float climbDuration = 0.58f;
-    [SerializeField] private float minClimbFacingDot = 0.45f;
-    [SerializeField] private LayerMask climbMask = ~0;
-
     private CharacterController controller;
     private Vector3 horizontalVelocity;
     private float verticalVelocity;
@@ -53,7 +43,6 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private float bobTimer;
     private float bobOffset;
     private float pitch;
-    private bool isClimbing;
 
     private void Awake()
     {
@@ -91,17 +80,6 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
-        }
-
-        if (isClimbing)
-        {
-            return;
-        }
-
-        if (Keyboard.current.eKey.wasPressedThisFrame && TryFindClimb(out Vector3 climbTarget))
-        {
-            StartCoroutine(ClimbTo(climbTarget));
-            return;
         }
 
         Look();
@@ -149,132 +127,6 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         Vector3 velocity = horizontalVelocity + Vector3.up * verticalVelocity;
         controller.Move(velocity * Time.deltaTime);
-    }
-
-    private bool TryFindClimb(out Vector3 landingPosition)
-    {
-        landingPosition = Vector3.zero;
-
-        if (cameraPivot == null || !controller.isGrounded)
-        {
-            return false;
-        }
-
-        Ray eyeRay = new Ray(cameraPivot.position, cameraPivot.forward);
-        if (!Physics.Raycast(eyeRay, out RaycastHit wallHit, climbCheckDistance, climbMask, QueryTriggerInteraction.Ignore))
-        {
-            return false;
-        }
-
-        ClimbableSurface climbable = wallHit.collider.GetComponentInParent<ClimbableSurface>();
-        if (climbable == null)
-        {
-            return false;
-        }
-
-        Vector3 flatForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
-        Vector3 flatWallNormal = Vector3.ProjectOnPlane(wallHit.normal, Vector3.up).normalized;
-        if (flatForward.sqrMagnitude < 0.01f || flatWallNormal.sqrMagnitude < 0.01f)
-        {
-            return false;
-        }
-
-        float facingDot = Vector3.Dot(flatForward, -flatWallNormal);
-        if (facingDot < Mathf.Max(minClimbFacingDot, climbable.MinFacingDot))
-        {
-            return false;
-        }
-
-        float maxClimbHeight = Mathf.Min(climbTopProbeHeight, climbable.MaxClimbHeight);
-        Vector3 climbDirection = -flatWallNormal;
-        Vector3 topProbeOrigin = wallHit.point + Vector3.up * maxClimbHeight + climbDirection * climbForwardProbe;
-
-        if (!Physics.Raycast(topProbeOrigin, Vector3.down, out RaycastHit topHit, maxClimbHeight + 0.25f, climbMask, QueryTriggerInteraction.Ignore))
-        {
-            return false;
-        }
-
-        if (Vector3.Dot(topHit.normal, Vector3.up) < climbable.MinTopNormalY)
-        {
-            return false;
-        }
-
-        float climbHeight = topHit.point.y - transform.position.y;
-        if (climbHeight < climbable.MinClimbHeight || climbHeight > climbable.MaxClimbHeight)
-        {
-            return false;
-        }
-
-        Vector3 candidate = topHit.point + climbDirection * climbLandingForwardOffset;
-        candidate.y += 0.015f;
-
-        if (!HasLandingClearance(candidate))
-        {
-            return false;
-        }
-
-        landingPosition = candidate;
-        return true;
-    }
-
-    private bool HasLandingClearance(Vector3 feetPosition)
-    {
-        float radius = controller.radius * 0.9f;
-        Vector3 bottom = feetPosition + Vector3.up * (radius + 0.02f);
-        Vector3 top = feetPosition + Vector3.up * (standingHeight - radius);
-
-        Collider[] hits = Physics.OverlapCapsule(bottom, top, radius, ~0, QueryTriggerInteraction.Ignore);
-        for (int i = 0; i < hits.Length; i++)
-        {
-            if (!hits[i].transform.IsChildOf(transform))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    private IEnumerator ClimbTo(Vector3 landingPosition)
-    {
-        isClimbing = true;
-        horizontalVelocity = Vector3.zero;
-        verticalVelocity = 0f;
-        bobTimer = 0f;
-        bobOffset = 0f;
-        ApplyCameraHeight(true);
-
-        controller.enabled = false;
-
-        Vector3 start = transform.position;
-        Vector3 liftPoint = new Vector3(start.x, landingPosition.y + 0.04f, start.z);
-        float elapsed = 0f;
-
-        while (elapsed < climbDuration)
-        {
-            elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / climbDuration);
-            float pullT = Mathf.SmoothStep(0f, 1f, t);
-
-            transform.position = t < 0.58f
-                ? Vector3.Lerp(start, liftPoint, Mathf.SmoothStep(0f, 1f, t / 0.58f))
-                : Vector3.Lerp(liftPoint, landingPosition, Mathf.SmoothStep(0f, 1f, (t - 0.58f) / 0.42f));
-
-            float cameraPull = Mathf.Sin(pullT * Mathf.PI) * 0.035f;
-            if (cameraPivot != null)
-            {
-                cameraPivot.localPosition = new Vector3(0f, currentEyeHeight - cameraPull, 0f);
-            }
-
-            yield return null;
-        }
-
-        transform.position = landingPosition;
-        controller.enabled = true;
-        ConfigureTinyBody(standingHeight);
-        currentEyeHeight = standingEyeHeight;
-        ApplyCameraHeight(true);
-        isClimbing = false;
     }
 
     private void UpdateCrouch()

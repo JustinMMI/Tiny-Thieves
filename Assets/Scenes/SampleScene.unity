@@ -213,15 +213,6 @@ MonoBehaviour:
   sprintBobAmount: 0.025
   crouchBobAmount: 0.009
   bobReturnSpeed: 18
-  climbCheckDistance: 0.75
-  climbTopProbeHeight: 1.05
-  climbForwardProbe: 0.34
-  climbLandingForwardOffset: 0.18
-  climbDuration: 0.58
-  minClimbFacingDot: 0.45
-  climbMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
 --- !u!1 &120000010
 GameObject:
   m_ObjectHideFlags: 0
@@ -508,8 +499,6 @@ GameObject:
   - component: {fileID: 351303751}
   - component: {fileID: 351303750}
   - component: {fileID: 351303749}
-  - component: {fileID: 351303753}
-  - component: {fileID: 351303754}
   m_Layer: 0
   m_Name: Cube (2)
   m_TagString: Untagged
@@ -610,38 +599,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &351303753
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 351303748}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 51fcbb4861574f94a9ea5c97375d630f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  minClimbHeight: 0.12
-  maxClimbHeight: 1.05
-  minFacingDot: 0.45
-  minTopNormalY: 0.75
---- !u!114 &351303754
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 351303748}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 51fcbb4861574f94a9ea5c97375d630f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ClimbableSurface
-  minClimbHeight: 0.12
-  maxClimbHeight: 1.05
-  minFacingDot: 0.45
-  minTopNormalY: 0.75
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -943,7 +900,6 @@ GameObject:
   - component: {fileID: 1151052088}
   - component: {fileID: 1151052087}
   - component: {fileID: 1151052086}
-  - component: {fileID: 1151052090}
   m_Layer: 0
   m_Name: Cube (1)
   m_TagString: Untagged
@@ -1044,22 +1000,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1151052090
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1151052085}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 51fcbb4861574f94a9ea5c97375d630f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  minClimbHeight: 0.12
-  maxClimbHeight: 1.05
-  minFacingDot: 0.45
-  minTopNormalY: 0.75
 --- !u!1 &1442630305
 GameObject:
   m_ObjectHideFlags: 0
@@ -1162,7 +1102,6 @@ GameObject:
   - component: {fileID: 1915326276}
   - component: {fileID: 1915326275}
   - component: {fileID: 1915326274}
-  - component: {fileID: 1915326278}
   m_Layer: 0
   m_Name: Cube
   m_TagString: Untagged
@@ -1263,22 +1202,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1915326278
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1915326273}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 51fcbb4861574f94a9ea5c97375d630f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  minClimbHeight: 0.12
-  maxClimbHeight: 1.05
-  minFacingDot: 0.45
-  minTopNormalY: 0.75
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
