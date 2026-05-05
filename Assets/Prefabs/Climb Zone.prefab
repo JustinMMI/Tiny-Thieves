@@ -73,5 +73,6 @@ MonoBehaviour:
   landingFeetOffset: 0.02
   edgePadding: 0.08
   grabForwardOffset: 0.08
+  landingForwardOffset: 0.15
   activationPadding: 0.12
   requirePlayerBelowLanding: 1

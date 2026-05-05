@@ -20,6 +20,7 @@ public sealed class ClimbZone : MonoBehaviour
 
     [Header("Flow")]
     [SerializeField] private float grabForwardOffset = 0.08f;
+    [SerializeField] private float landingForwardOffset = 0.28f;
     [SerializeField] private float activationPadding = 0.12f;
     [SerializeField] private bool requirePlayerBelowLanding = true;
 
@@ -88,6 +89,7 @@ public sealed class ClimbZone : MonoBehaviour
         minClimbHeight = Mathf.Max(0f, minClimbHeight);
         maxClimbHeight = Mathf.Max(minClimbHeight, maxClimbHeight);
         edgePadding = Mathf.Max(0f, edgePadding);
+        landingForwardOffset = Mathf.Max(0f, landingForwardOffset);
         activationPadding = Mathf.Max(0f, activationPadding);
     }
 
@@ -139,13 +141,14 @@ public sealed class ClimbZone : MonoBehaviour
         }
 
         float padding = Mathf.Max(edgePadding, controller != null ? controller.radius : 0f);
-        Vector3 landingPosition = GetNearestTopPoint(landingBounds, playerPosition, padding);
+        Vector3 climbDirection = GetClimbDirection(playerPosition, climbBounds, landingBounds, volume);
+        Vector3 landingProbePosition = playerPosition + climbDirection * landingForwardOffset;
+        Vector3 landingPosition = GetNearestTopPoint(landingBounds, landingProbePosition, padding);
         landingPosition.y += landingFeetOffset;
 
         Vector3 grabPosition = GetNearestTopPoint(climbBounds, playerPosition, padding * 0.5f);
         grabPosition.y = Mathf.Clamp(playerPosition.y + 0.08f, climbBounds.min.y, climbBounds.max.y);
 
-        Vector3 climbDirection = Vector3.ProjectOnPlane(landingPosition - playerPosition, Vector3.up);
         if (climbDirection.sqrMagnitude > 0.0001f)
         {
             grabPosition -= climbDirection.normalized * grabForwardOffset;
@@ -153,6 +156,33 @@ public sealed class ClimbZone : MonoBehaviour
 
         route = new Route(grabPosition, landingPosition);
         return true;
+    }
+
+    private static Vector3 GetClimbDirection(Vector3 playerPosition, Bounds climbBounds, Bounds landingBounds, BoxCollider volume)
+    {
+        Vector3 direction = Vector3.ProjectOnPlane(landingBounds.center - climbBounds.center, Vector3.up);
+        if (direction.sqrMagnitude > 0.0001f)
+        {
+            return direction.normalized;
+        }
+
+        direction = Vector3.ProjectOnPlane(landingBounds.center - playerPosition, Vector3.up);
+        if (direction.sqrMagnitude > 0.0001f)
+        {
+            return direction.normalized;
+        }
+
+        Vector3 localPlayer = volume.transform.InverseTransformPoint(playerPosition) - volume.center;
+        Vector3 localDirection = Mathf.Abs(localPlayer.x) > Mathf.Abs(localPlayer.z)
+            ? new Vector3(-Mathf.Sign(localPlayer.x), 0f, 0f)
+            : new Vector3(0f, 0f, -Mathf.Sign(localPlayer.z));
+
+        if (localDirection.sqrMagnitude < 0.0001f)
+        {
+            localDirection = Vector3.forward;
+        }
+
+        return Vector3.ProjectOnPlane(volume.transform.TransformDirection(localDirection), Vector3.up).normalized;
     }
 
     public bool ContainsPlayer(Vector3 playerPosition, CharacterController controller)
@@ -205,17 +235,26 @@ public sealed class ClimbZone : MonoBehaviour
 
     private void OnDrawGizmosSelected()
     {
+        DrawGizmosDebug(
+            new Color(0.1f, 0.65f, 1f, 0.22f),
+            new Color(0.1f, 0.65f, 1f, 0.9f),
+            new Color(0.2f, 1f, 0.45f, 0.22f),
+            new Color(0.2f, 1f, 0.45f, 0.9f));
+    }
+
+    public void DrawGizmosDebug(Color climbFill, Color climbWire, Color landingFill, Color landingWire)
+    {
         BoxCollider volume = Volume;
         if (volume == null)
         {
             return;
         }
 
-        DrawBox(volume, new Color(0.1f, 0.65f, 1f, 0.22f), new Color(0.1f, 0.65f, 1f, 0.9f));
+        DrawBox(volume, climbFill, climbWire);
 
         if (landingZoneOverride != null)
         {
-            DrawBox(landingZoneOverride, new Color(0.2f, 1f, 0.45f, 0.22f), new Color(0.2f, 1f, 0.45f, 0.9f));
+            DrawBox(landingZoneOverride, landingFill, landingWire);
         }
     }
 

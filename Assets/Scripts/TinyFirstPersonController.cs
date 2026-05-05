@@ -178,6 +178,29 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         GL.PopMatrix();
     }
 
+    private void OnDrawGizmos()
+    {
+        if (!showClimbZonesInGame)
+        {
+            return;
+        }
+
+        Color climbFill = WithAlpha(climbZoneDebugColor, 0.22f);
+        Color climbWire = WithAlpha(climbZoneDebugColor, 0.9f);
+        Color landingFill = WithAlpha(landingZoneDebugColor, 0.22f);
+        Color landingWire = WithAlpha(landingZoneDebugColor, 0.9f);
+
+        ClimbZone[] zones = Object.FindObjectsByType<ClimbZone>(FindObjectsSortMode.None);
+        for (int i = 0; i < zones.Length; i++)
+        {
+            ClimbZone zone = zones[i];
+            if (zone != null && zone.isActiveAndEnabled)
+            {
+                zone.DrawGizmosDebug(climbFill, climbWire, landingFill, landingWire);
+            }
+        }
+    }
+
     private void Look(float sensitivityMultiplier)
     {
         if (Mouse.current == null || cameraPivot == null || Cursor.lockState != CursorLockMode.Locked)
@@ -326,15 +349,15 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
             if (t < 0.42f)
             {
-                transform.position = Vector3.Lerp(start, grab, Mathf.SmoothStep(0f, 1f, t / 0.42f));
+                transform.position = Vector3.Lerp(start, grab, SmootherStep(t / 0.42f));
             }
             else if (t < 0.72f)
             {
-                transform.position = Vector3.Lerp(grab, liftPoint, Mathf.SmoothStep(0f, 1f, (t - 0.42f) / 0.3f));
+                transform.position = Vector3.Lerp(grab, liftPoint, SmootherStep((t - 0.42f) / 0.3f));
             }
             else
             {
-                transform.position = Vector3.Lerp(liftPoint, landing, Mathf.SmoothStep(0f, 1f, (t - 0.72f) / 0.28f));
+                transform.position = Vector3.Lerp(liftPoint, landing, SmootherStep((t - 0.72f) / 0.28f));
             }
 
             climbCameraOffset = -Mathf.Sin(eased * Mathf.PI) * climbCameraPull;
@@ -347,6 +370,12 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         currentEyeHeight = standingEyeHeight;
         ApplyCameraHeight(true);
         isClimbing = false;
+    }
+
+    private static float SmootherStep(float t)
+    {
+        t = Mathf.Clamp01(t);
+        return t * t * t * (t * (t * 6f - 15f) + 10f);
     }
 
     private void UpdateCrouch()
@@ -513,5 +542,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     {
         GL.Vertex(start);
         GL.Vertex(end);
+    }
+
+    private static Color WithAlpha(Color color, float alpha)
+    {
+        color.a = alpha;
+        return color;
     }
 }
