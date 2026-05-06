@@ -14,6 +14,12 @@ public sealed class TinyItem : MonoBehaviour
     [SerializeField] private Vector3 holdLocalEulerAngles = Vector3.zero;
     [SerializeField, Range(0.05f, 0.45f)] private float handAnchorWidth = 0.18f;
 
+    [Header("Physics")]
+    [SerializeField] private bool configurePhysics = true;
+    [SerializeField] private bool syncMassWithWeight = true;
+    [SerializeField, Min(1)] private int solverIterations = 12;
+    [SerializeField, Min(1)] private int solverVelocityIterations = 4;
+
     private Rigidbody itemRigidbody;
     private Collider[] itemColliders;
     private bool[] colliderEnabledStates;
@@ -30,10 +36,17 @@ public sealed class TinyItem : MonoBehaviour
     private void Awake()
     {
         CachePhysics();
+        ConfigurePhysics();
     }
 
     private void OnValidate()
     {
+        if (!Application.isPlaying || !IsHeld)
+        {
+            CachePhysics();
+            ConfigurePhysics();
+        }
+
         if (Application.isPlaying && IsHeld)
         {
             ApplyHeldLocalPose();
@@ -58,6 +71,7 @@ public sealed class TinyItem : MonoBehaviour
             originalUseGravity = itemRigidbody.useGravity;
             itemRigidbody.isKinematic = true;
             itemRigidbody.useGravity = false;
+            itemRigidbody.interpolation = RigidbodyInterpolation.None;
         }
 
         SetCollidersEnabled(false);
@@ -99,6 +113,7 @@ public sealed class TinyItem : MonoBehaviour
         {
             itemRigidbody.isKinematic = originalIsKinematic;
             itemRigidbody.useGravity = originalUseGravity;
+            ConfigurePhysics();
 #if UNITY_6000_0_OR_NEWER
             itemRigidbody.linearVelocity = velocity;
 #else
@@ -149,6 +164,24 @@ public sealed class TinyItem : MonoBehaviour
         {
             colliderEnabledStates[i] = itemColliders[i] != null && itemColliders[i].enabled;
         }
+    }
+
+    private void ConfigurePhysics()
+    {
+        if (!configurePhysics || itemRigidbody == null)
+        {
+            return;
+        }
+
+        if (syncMassWithWeight)
+        {
+            itemRigidbody.mass = Mathf.Max(0.05f, weightKilograms);
+        }
+
+        itemRigidbody.interpolation = RigidbodyInterpolation.Interpolate;
+        itemRigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+        itemRigidbody.solverIterations = Mathf.Max(1, solverIterations);
+        itemRigidbody.solverVelocityIterations = Mathf.Max(1, solverVelocityIterations);
     }
 
     private void SetCollidersEnabled(bool enabled)

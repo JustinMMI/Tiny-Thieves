@@ -62,6 +62,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField, Min(0f)] private float carryWeightSlowdown = 0.08f;
     [SerializeField] private Color itemHighlightColor = new Color(1f, 0.92f, 0.18f, 1f);
 
+    [Header("Rail Wagons")]
+    [SerializeField] private float wagonLookDistance = 1.15f;
+    [SerializeField] private LayerMask wagonInteractionMask = ~0;
+    [SerializeField] private float wagonPlayerFollowSharpness = 12f;
+
     [Header("Debug")]
     [SerializeField] private bool showClimbZonesInGame;
     [SerializeField] private Color climbZoneDebugColor = new Color(0.1f, 0.65f, 1f, 0.95f);
@@ -82,6 +87,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private TinyItem heldItem;
     private Transform itemHoldPoint;
     private float heldItemMotionTimer;
+    private TinyRailWagon focusedWagon;
+    private TinyRailWagon pushingWagon;
 
     private void Awake()
     {
@@ -144,6 +151,12 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         Look(1f);
 
+        if (pushingWagon != null)
+        {
+            UpdateWagonPush();
+            return;
+        }
+
         if (Mouse.current != null && heldItem != null)
         {
             if (Mouse.current.leftButton.wasPressedThisFrame)
@@ -160,10 +173,17 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         UpdateItemFocus();
+        UpdateWagonFocus();
 
         if (Keyboard.current.eKey.wasPressedThisFrame && focusedItem != null)
         {
             PickUpItem(focusedItem);
+            return;
+        }
+
+        if (Keyboard.current.eKey.wasPressedThisFrame && focusedWagon != null)
+        {
+            StartPushingWagon(focusedWagon);
             return;
         }
 
@@ -205,7 +225,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void OnRenderObject()
     {
-        if ((!showClimbZonesInGame && focusedItem == null) || !EnsureDebugLineMaterial())
+        if ((!showClimbZonesInGame && focusedItem == null && focusedWagon == null) || !EnsureDebugLineMaterial())
         {
             return;
         }
@@ -238,12 +258,17 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             DrawRuntimeWireBounds(focusedItem.GetWorldBounds(), itemHighlightColor);
         }
 
+        if (focusedWagon != null)
+        {
+            DrawRuntimeWireBounds(focusedWagon.GetWorldBounds(), Color.cyan);
+        }
+
         GL.PopMatrix();
     }
 
     private void OnGUI()
     {
-        if (focusedItem == null)
+        if (focusedItem == null && focusedWagon == null)
         {
             return;
         }
@@ -253,10 +278,18 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         Rect rect = new Rect((Screen.width - width) * 0.5f, Screen.height * 0.58f, width, height);
 
         GUI.Box(rect, string.Empty);
-        GUI.Label(new Rect(rect.x + 14f, rect.y + 10f, width - 28f, 22f), focusedItem.ItemName);
-        GUI.Label(new Rect(rect.x + 14f, rect.y + 36f, width - 28f, 20f), "Poids : " + focusedItem.WeightKilograms.ToString("0.##") + " kg");
-        GUI.Label(new Rect(rect.x + 14f, rect.y + 58f, width - 28f, 20f), "Prix : " + focusedItem.Value + " $");
-        GUI.Label(new Rect(rect.x + 14f, rect.y + 84f, width - 28f, 20f), "[E] Prendre");
+        if (focusedItem != null)
+        {
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 10f, width - 28f, 22f), focusedItem.ItemName);
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 36f, width - 28f, 20f), "Poids : " + focusedItem.WeightKilograms.ToString("0.##") + " kg");
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 58f, width - 28f, 20f), "Prix : " + focusedItem.Value + " $");
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 84f, width - 28f, 20f), "[E] Prendre");
+        }
+        else
+        {
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 16f, width - 28f, 24f), "Wagon");
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 54f, width - 28f, 24f), "[E] Pousser");
+        }
     }
 
     private void OnDrawGizmos()
@@ -575,7 +608,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private void UpdateItemFocus()
     {
         focusedItem = null;
-        if (cameraPivot == null || heldItem != null)
+        if (cameraPivot == null || heldItem != null || pushingWagon != null)
         {
             return;
         }
@@ -590,6 +623,27 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         if (item != null && !item.IsHeld)
         {
             focusedItem = item;
+        }
+    }
+
+    private void UpdateWagonFocus()
+    {
+        focusedWagon = null;
+        if (cameraPivot == null || heldItem != null || focusedItem != null || pushingWagon != null)
+        {
+            return;
+        }
+
+        Ray ray = new Ray(cameraPivot.position, cameraPivot.forward);
+        if (!Physics.Raycast(ray, out RaycastHit hit, wagonLookDistance, wagonInteractionMask, QueryTriggerInteraction.Collide))
+        {
+            return;
+        }
+
+        TinyRailWagon wagon = hit.collider.GetComponentInParent<TinyRailWagon>();
+        if (wagon != null && wagon.CanInteract(transform))
+        {
+            focusedWagon = wagon;
         }
     }
 
@@ -687,6 +741,78 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         heldItem.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
         raymanBody.AttachHands(leftAnchor, rightAnchor);
+    }
+
+    private void StartPushingWagon(TinyRailWagon wagon)
+    {
+        if (wagon == null || heldItem != null)
+        {
+            return;
+        }
+
+        pushingWagon = wagon;
+        focusedWagon = null;
+        horizontalVelocity = Vector3.zero;
+        verticalVelocity = 0f;
+        AttachHandsToWagon();
+    }
+
+    private void StopPushingWagon()
+    {
+        pushingWagon = null;
+        if (raymanBody != null)
+        {
+            raymanBody.ReleaseHands();
+        }
+    }
+
+    private void UpdateWagonPush()
+    {
+        if (pushingWagon == null)
+        {
+            return;
+        }
+
+        if ((Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
+            || (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame))
+        {
+            StopPushingWagon();
+            return;
+        }
+
+        Vector2 input = ReadMoveInput();
+        Vector3 wagonDelta = pushingWagon.PushFromPlayer(transform, input.y, Time.deltaTime);
+        if (wagonDelta.sqrMagnitude > 0.000001f)
+        {
+            controller.Move(wagonDelta);
+        }
+
+        Vector3 targetPosition = pushingWagon.GetPlayerFollowPosition(transform);
+        Vector3 followDelta = targetPosition - transform.position;
+        followDelta.y = 0f;
+        float follow = 1f - Mathf.Exp(-wagonPlayerFollowSharpness * Time.deltaTime);
+        controller.Move(followDelta * follow);
+
+        if (controller.isGrounded && verticalVelocity < 0f)
+        {
+            verticalVelocity = -1.5f;
+        }
+
+        verticalVelocity += gravity * Time.deltaTime;
+        controller.Move(Vector3.up * verticalVelocity * Time.deltaTime);
+        UpdateCameraBob();
+        AttachHandsToWagon();
+    }
+
+    private void AttachHandsToWagon()
+    {
+        if (pushingWagon == null || raymanBody == null)
+        {
+            return;
+        }
+
+        pushingWagon.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
+        raymanBody.AttachHands(leftAnchor, rightAnchor, pushingWagon.GetHandRotation(transform));
     }
 
     private float GetCarrySpeedMultiplier()
