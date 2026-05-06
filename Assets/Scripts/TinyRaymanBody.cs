@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
@@ -8,12 +7,12 @@ using UnityEngine.Serialization;
 [DisallowMultipleComponent]
 public sealed class TinyRaymanBody : MonoBehaviour
 {
-    [Serializable]
-    private sealed class CharacterSkin
+    private enum PlayerSkin
     {
-        public string skinName = "Skin";
-        public GameObject visualSource;
-        public bool hideRenderersMissingFromSkin;
+        Vert,
+        Rouge,
+        Bleu,
+        Orange
     }
 
     [Header("Visibility")]
@@ -36,9 +35,18 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private bool showCharacterModelInLocalView = true;
     [SerializeField] private bool applyCharacterModelOffsetToHitbox = true;
 
-    [Header("Character Skins")]
-    [SerializeField] private CharacterSkin[] characterSkins = new CharacterSkin[0];
-    [SerializeField] private int selectedSkinIndex = -1;
+    [Header("Character Skin")]
+    [SerializeField] private PlayerSkin selectedSkin;
+    [SerializeField] private string bodyRendererName = "Body";
+    [SerializeField] private Material greenBodyMaterial;
+    [SerializeField] private Material redBodyMaterial;
+    [SerializeField] private Material blueBodyMaterial;
+    [SerializeField] private Material orangeBodyMaterial;
+    [SerializeField] private string greenMaskName = "Mask Green";
+    [SerializeField] private string redMaskName = "Mask Red";
+    [SerializeField] private string blueMaskName = "Mask Blue";
+    [SerializeField] private string orangeMaskName = "Mask Orange";
+    [SerializeField] private string whiteMaskName = "Mask White";
 
     [Header("Head Look")]
     [SerializeField] private bool driveHeadLookWithCamera = true;
@@ -121,8 +129,6 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private Quaternion headLookBaseLocalRotation = Quaternion.identity;
     private float targetHeadLookPitch;
     private float currentHeadLookPitch;
-    private int appliedSkinIndex = int.MinValue;
-    private GameObject appliedSkinSource;
 
     public Vector3 HitboxLocalOffset => applyCharacterModelOffsetToHitbox && characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
@@ -197,8 +203,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     public void SetSkin(int skinIndex)
     {
-        selectedSkinIndex = skinIndex;
-        ApplySelectedSkin(true);
+        selectedSkin = (PlayerSkin)Mathf.Clamp(skinIndex, 0, Enum.GetValues(typeof(PlayerSkin)).Length - 1);
+        ApplyCharacterSkin();
     }
 
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
@@ -267,6 +273,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
         leftFoot = EnsurePart("Left Foot", footSize, leftFootColor);
         rightFoot = EnsurePart("Right Foot", footSize, rightFootColor);
         ApplyLocalVisibility();
+        ApplyCharacterSkin();
     }
 
     private Transform EnsurePart(
@@ -334,7 +341,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
         modelRoot.localRotation = Quaternion.Euler(characterModelLocalEulerAngles);
         modelRoot.localScale = characterModelLocalScale;
         EnsureCustomModel(modelRoot, characterModel, Vector3.zero, Vector3.zero, Vector3.one);
-        ApplySelectedSkin(true);
+        ConfigureCharacterRenderers(modelRoot);
+        ApplyCharacterSkin();
         ResolveHeadLookTransform();
         characterAnimator = modelRoot.GetComponentInChildren<Animator>(true);
         if (characterAnimator == null)
@@ -345,6 +353,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
         if (characterAnimator != null)
         {
             characterAnimator.applyRootMotion = false;
+            characterAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
             characterAnimator.speed = 1f;
             if (animatorController != null)
             {
@@ -353,146 +362,105 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         SetupWalkPlayable();
+        characterAnimator.Update(0f);
         return modelRoot;
     }
 
-    private void ApplySelectedSkin(bool force = false)
+    private static void ConfigureCharacterRenderers(Transform modelRoot)
     {
-        if (characterModelRoot == null
-            || characterSkins == null
-            || characterSkins.Length == 0
-            || selectedSkinIndex < 0)
-        {
-            appliedSkinIndex = int.MinValue;
-            appliedSkinSource = null;
-            return;
-        }
-
-        int skinIndex = Mathf.Min(selectedSkinIndex, characterSkins.Length - 1);
-        if (skinIndex != selectedSkinIndex)
-        {
-            selectedSkinIndex = skinIndex;
-        }
-
-        CharacterSkin skin = characterSkins[skinIndex];
-        if (skin == null || skin.visualSource == null)
-        {
-            appliedSkinIndex = int.MinValue;
-            appliedSkinSource = null;
-            return;
-        }
-
-        if (!force && appliedSkinIndex == skinIndex && appliedSkinSource == skin.visualSource)
+        if (modelRoot == null)
         {
             return;
         }
 
-        Transform targetRoot = characterModelRoot.Find(CustomModelName);
-        if (targetRoot == null)
+        SkinnedMeshRenderer[] skinnedRenderers = modelRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        for (int i = 0; i < skinnedRenderers.Length; i++)
         {
-            targetRoot = characterModelRoot;
+            skinnedRenderers[i].updateWhenOffscreen = true;
         }
-
-        CopySkinVisuals(skin.visualSource.transform, targetRoot, skin.hideRenderersMissingFromSkin);
-        appliedSkinIndex = skinIndex;
-        appliedSkinSource = skin.visualSource;
     }
 
-    private static void CopySkinVisuals(Transform sourceRoot, Transform targetRoot, bool hideMissingRenderers)
+    private void ApplyCharacterSkin()
     {
-        Dictionary<string, Renderer> sourceByPath = BuildRendererMap(sourceRoot);
-        Dictionary<string, Renderer> sourceByName = BuildRendererNameMap(sourceRoot);
-        Renderer[] targetRenderers = targetRoot.GetComponentsInChildren<Renderer>(true);
-
-        for (int i = 0; i < targetRenderers.Length; i++)
+        Transform modelInstance = characterModelRoot != null ? characterModelRoot.Find(CustomModelName) : null;
+        Transform skinRoot = modelInstance != null ? modelInstance : characterModelRoot;
+        if (skinRoot == null)
         {
-            Renderer targetRenderer = targetRenderers[i];
-            string targetPath = GetRelativePath(targetRoot, targetRenderer.transform);
-            if (!sourceByPath.TryGetValue(targetPath, out Renderer sourceRenderer)
-                && !sourceByName.TryGetValue(targetRenderer.name, out sourceRenderer))
+            return;
+        }
+
+        Material bodyMaterial = GetSelectedBodyMaterial();
+        if (bodyMaterial != null)
+        {
+            Renderer[] bodyRenderers = FindRenderersByName(skinRoot, bodyRendererName);
+            for (int i = 0; i < bodyRenderers.Length; i++)
             {
-                if (hideMissingRenderers)
-                {
-                    targetRenderer.enabled = false;
-                }
-
-                continue;
-            }
-
-            CopyRendererVisual(sourceRenderer, targetRenderer);
-        }
-    }
-
-    private static void CopyRendererVisual(Renderer sourceRenderer, Renderer targetRenderer)
-    {
-        targetRenderer.enabled = sourceRenderer.enabled;
-        targetRenderer.sharedMaterials = sourceRenderer.sharedMaterials;
-
-        if (sourceRenderer is SkinnedMeshRenderer sourceSkinned
-            && targetRenderer is SkinnedMeshRenderer targetSkinned)
-        {
-            targetSkinned.sharedMesh = sourceSkinned.sharedMesh;
-            targetSkinned.localBounds = sourceSkinned.localBounds;
-            targetSkinned.updateWhenOffscreen = sourceSkinned.updateWhenOffscreen;
-            return;
-        }
-
-        MeshFilter sourceMesh = sourceRenderer.GetComponent<MeshFilter>();
-        MeshFilter targetMesh = targetRenderer.GetComponent<MeshFilter>();
-        if (sourceMesh != null && targetMesh != null)
-        {
-            targetMesh.sharedMesh = sourceMesh.sharedMesh;
-        }
-    }
-
-    private static Dictionary<string, Renderer> BuildRendererMap(Transform root)
-    {
-        Dictionary<string, Renderer> renderers = new Dictionary<string, Renderer>();
-        Renderer[] children = root.GetComponentsInChildren<Renderer>(true);
-        for (int i = 0; i < children.Length; i++)
-        {
-            string path = GetRelativePath(root, children[i].transform);
-            if (!renderers.ContainsKey(path))
-            {
-                renderers.Add(path, children[i]);
+                ApplyMaterialToRenderer(bodyRenderers[i], bodyMaterial);
             }
         }
 
-        return renderers;
+        SetMaskVisible(skinRoot, whiteMaskName, false);
+        SetMaskVisible(skinRoot, greenMaskName, selectedSkin == PlayerSkin.Vert);
+        SetMaskVisible(skinRoot, redMaskName, selectedSkin == PlayerSkin.Rouge);
+        SetMaskVisible(skinRoot, blueMaskName, selectedSkin == PlayerSkin.Bleu);
+        SetMaskVisible(skinRoot, orangeMaskName, selectedSkin == PlayerSkin.Orange);
     }
 
-    private static Dictionary<string, Renderer> BuildRendererNameMap(Transform root)
+    private Material GetSelectedBodyMaterial()
     {
-        Dictionary<string, Renderer> renderers = new Dictionary<string, Renderer>();
-        Renderer[] children = root.GetComponentsInChildren<Renderer>(true);
-        for (int i = 0; i < children.Length; i++)
+        switch (selectedSkin)
         {
-            string name = children[i].name;
-            if (!renderers.ContainsKey(name))
-            {
-                renderers.Add(name, children[i]);
-            }
+            case PlayerSkin.Rouge:
+                return redBodyMaterial;
+            case PlayerSkin.Bleu:
+                return blueBodyMaterial;
+            case PlayerSkin.Orange:
+                return orangeBodyMaterial;
+            default:
+                return greenBodyMaterial;
         }
-
-        return renderers;
     }
 
-    private static string GetRelativePath(Transform root, Transform child)
+    private static void SetMaskVisible(Transform root, string maskName, bool visible)
     {
-        if (root == null || child == null || child == root)
+        Transform mask = FindTransformByName(root, maskName);
+        if (mask != null)
         {
-            return string.Empty;
+            mask.gameObject.SetActive(visible);
+        }
+    }
+
+    private static Renderer[] FindRenderersByName(Transform root, string rendererName)
+    {
+        Transform rendererTransform = FindTransformByName(root, rendererName);
+        if (rendererTransform == null)
+        {
+            return Array.Empty<Renderer>();
         }
 
-        string path = child.name;
-        Transform current = child.parent;
-        while (current != null && current != root)
+        return rendererTransform.GetComponentsInChildren<Renderer>(true);
+    }
+
+    private static void ApplyMaterialToRenderer(Renderer renderer, Material material)
+    {
+        if (renderer == null || material == null)
         {
-            path = current.name + "/" + path;
-            current = current.parent;
+            return;
         }
 
-        return path;
+        Material[] materials = renderer.sharedMaterials;
+        if (materials.Length == 0)
+        {
+            renderer.sharedMaterial = material;
+            return;
+        }
+
+        for (int i = 0; i < materials.Length; i++)
+        {
+            materials[i] = material;
+        }
+
+        renderer.sharedMaterials = materials;
     }
 
     private void ResolveHeadLookTransform()
