@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
@@ -6,6 +8,14 @@ using UnityEngine.Serialization;
 [DisallowMultipleComponent]
 public sealed class TinyRaymanBody : MonoBehaviour
 {
+    [Serializable]
+    private sealed class CharacterSkin
+    {
+        public string skinName = "Skin";
+        public GameObject visualSource;
+        public bool hideRenderersMissingFromSkin;
+    }
+
     [Header("Visibility")]
     [SerializeField] private bool createOnAwake = true;
     [SerializeField] private bool hideLegacyModel = true;
@@ -26,6 +36,18 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private bool showCharacterModelInLocalView = true;
     [SerializeField] private bool applyCharacterModelOffsetToHitbox = true;
 
+    [Header("Character Skins")]
+    [SerializeField] private CharacterSkin[] characterSkins = new CharacterSkin[0];
+    [SerializeField] private int selectedSkinIndex = -1;
+
+    [Header("Head Look")]
+    [SerializeField] private bool driveHeadLookWithCamera = true;
+    [SerializeField] private string headLookTransformName = "Head";
+    [SerializeField] private float headLookPitchInfluence = 0.65f;
+    [SerializeField] private float headLookMinPitch = -35f;
+    [SerializeField] private float headLookMaxPitch = 45f;
+    [SerializeField] private float headLookSharpness = 18f;
+
     [Header("Character Animation")]
     [SerializeField] private bool driveWalkAnimation = true;
     [SerializeField] private AnimationClip walkAnimationClip;
@@ -33,6 +55,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private string animatorWalkingBool = "IsWalking";
     [SerializeField] private string walkAnimationStateName = "walk";
     [SerializeField] private float walkAnimationSpeed = 1f;
+    [SerializeField] private float walkStopAnimationSpeed = 1f;
+    [SerializeField] private float walkAnimationReferenceSpeed = 1.65f;
     [SerializeField, Range(0f, 1f)] private float walkLoopStartNormalized = 0.22f;
     [SerializeField, Range(0f, 1f)] private float walkLoopEndNormalized = 0.78f;
     [SerializeField, Range(0f, 1f)] private float walkStopStartNormalized = 0.78f;
@@ -90,8 +114,15 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private const string CharacterModelName = "Character Model";
     private float walkAnimationTime = 1f;
     private bool wasWalking;
+    private bool wasWalkingBackward;
     private PlayableGraph walkGraph;
     private AnimationClipPlayable walkPlayable;
+    private Transform headLookTransform;
+    private Quaternion headLookBaseLocalRotation = Quaternion.identity;
+    private float targetHeadLookPitch;
+    private float currentHeadLookPitch;
+    private int appliedSkinIndex = int.MinValue;
+    private GameObject appliedSkinSource;
 
     public Vector3 HitboxLocalOffset => applyCharacterModelOffsetToHitbox && characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
@@ -143,15 +174,31 @@ public sealed class TinyRaymanBody : MonoBehaviour
         previousPosition = transform.position;
 
         Vector3 flatVelocity = Vector3.ProjectOnPlane(velocity, Vector3.up);
-        float speed01 = Mathf.Clamp01(flatVelocity.magnitude / 2.2f);
+        float flatSpeed = flatVelocity.magnitude;
+        float speed01 = Mathf.Clamp01(flatSpeed / 2.2f);
         moveCycle += speed01 * deltaTime * 9f;
+        float forwardAmount = flatVelocity.sqrMagnitude > 0.0001f
+            ? Vector3.Dot(flatVelocity.normalized, transform.forward)
+            : 0f;
 
-        UpdateCharacterAnimation(speed01, deltaTime);
+        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, deltaTime);
 
         float follow = 1f - Mathf.Exp(-followSharpness * deltaTime);
         UpdateCoreParts(speed01, follow);
         UpdateHands(speed01, follow, deltaTime);
         UpdateFeet(speed01, follow);
+        UpdateHeadLook(deltaTime);
+    }
+
+    public void SetCameraPitch(float cameraPitch)
+    {
+        targetHeadLookPitch = Mathf.Clamp(cameraPitch * headLookPitchInfluence, headLookMinPitch, headLookMaxPitch);
+    }
+
+    public void SetSkin(int skinIndex)
+    {
+        selectedSkinIndex = skinIndex;
+        ApplySelectedSkin(true);
     }
 
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
@@ -287,6 +334,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
         modelRoot.localRotation = Quaternion.Euler(characterModelLocalEulerAngles);
         modelRoot.localScale = characterModelLocalScale;
         EnsureCustomModel(modelRoot, characterModel, Vector3.zero, Vector3.zero, Vector3.one);
+        ApplySelectedSkin(true);
+        ResolveHeadLookTransform();
         characterAnimator = modelRoot.GetComponentInChildren<Animator>(true);
         if (characterAnimator == null)
         {
@@ -305,6 +354,175 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         SetupWalkPlayable();
         return modelRoot;
+    }
+
+    private void ApplySelectedSkin(bool force = false)
+    {
+        if (characterModelRoot == null
+            || characterSkins == null
+            || characterSkins.Length == 0
+            || selectedSkinIndex < 0)
+        {
+            appliedSkinIndex = int.MinValue;
+            appliedSkinSource = null;
+            return;
+        }
+
+        int skinIndex = Mathf.Min(selectedSkinIndex, characterSkins.Length - 1);
+        if (skinIndex != selectedSkinIndex)
+        {
+            selectedSkinIndex = skinIndex;
+        }
+
+        CharacterSkin skin = characterSkins[skinIndex];
+        if (skin == null || skin.visualSource == null)
+        {
+            appliedSkinIndex = int.MinValue;
+            appliedSkinSource = null;
+            return;
+        }
+
+        if (!force && appliedSkinIndex == skinIndex && appliedSkinSource == skin.visualSource)
+        {
+            return;
+        }
+
+        Transform targetRoot = characterModelRoot.Find(CustomModelName);
+        if (targetRoot == null)
+        {
+            targetRoot = characterModelRoot;
+        }
+
+        CopySkinVisuals(skin.visualSource.transform, targetRoot, skin.hideRenderersMissingFromSkin);
+        appliedSkinIndex = skinIndex;
+        appliedSkinSource = skin.visualSource;
+    }
+
+    private static void CopySkinVisuals(Transform sourceRoot, Transform targetRoot, bool hideMissingRenderers)
+    {
+        Dictionary<string, Renderer> sourceByPath = BuildRendererMap(sourceRoot);
+        Dictionary<string, Renderer> sourceByName = BuildRendererNameMap(sourceRoot);
+        Renderer[] targetRenderers = targetRoot.GetComponentsInChildren<Renderer>(true);
+
+        for (int i = 0; i < targetRenderers.Length; i++)
+        {
+            Renderer targetRenderer = targetRenderers[i];
+            string targetPath = GetRelativePath(targetRoot, targetRenderer.transform);
+            if (!sourceByPath.TryGetValue(targetPath, out Renderer sourceRenderer)
+                && !sourceByName.TryGetValue(targetRenderer.name, out sourceRenderer))
+            {
+                if (hideMissingRenderers)
+                {
+                    targetRenderer.enabled = false;
+                }
+
+                continue;
+            }
+
+            CopyRendererVisual(sourceRenderer, targetRenderer);
+        }
+    }
+
+    private static void CopyRendererVisual(Renderer sourceRenderer, Renderer targetRenderer)
+    {
+        targetRenderer.enabled = sourceRenderer.enabled;
+        targetRenderer.sharedMaterials = sourceRenderer.sharedMaterials;
+
+        if (sourceRenderer is SkinnedMeshRenderer sourceSkinned
+            && targetRenderer is SkinnedMeshRenderer targetSkinned)
+        {
+            targetSkinned.sharedMesh = sourceSkinned.sharedMesh;
+            targetSkinned.localBounds = sourceSkinned.localBounds;
+            targetSkinned.updateWhenOffscreen = sourceSkinned.updateWhenOffscreen;
+            return;
+        }
+
+        MeshFilter sourceMesh = sourceRenderer.GetComponent<MeshFilter>();
+        MeshFilter targetMesh = targetRenderer.GetComponent<MeshFilter>();
+        if (sourceMesh != null && targetMesh != null)
+        {
+            targetMesh.sharedMesh = sourceMesh.sharedMesh;
+        }
+    }
+
+    private static Dictionary<string, Renderer> BuildRendererMap(Transform root)
+    {
+        Dictionary<string, Renderer> renderers = new Dictionary<string, Renderer>();
+        Renderer[] children = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < children.Length; i++)
+        {
+            string path = GetRelativePath(root, children[i].transform);
+            if (!renderers.ContainsKey(path))
+            {
+                renderers.Add(path, children[i]);
+            }
+        }
+
+        return renderers;
+    }
+
+    private static Dictionary<string, Renderer> BuildRendererNameMap(Transform root)
+    {
+        Dictionary<string, Renderer> renderers = new Dictionary<string, Renderer>();
+        Renderer[] children = root.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < children.Length; i++)
+        {
+            string name = children[i].name;
+            if (!renderers.ContainsKey(name))
+            {
+                renderers.Add(name, children[i]);
+            }
+        }
+
+        return renderers;
+    }
+
+    private static string GetRelativePath(Transform root, Transform child)
+    {
+        if (root == null || child == null || child == root)
+        {
+            return string.Empty;
+        }
+
+        string path = child.name;
+        Transform current = child.parent;
+        while (current != null && current != root)
+        {
+            path = current.name + "/" + path;
+            current = current.parent;
+        }
+
+        return path;
+    }
+
+    private void ResolveHeadLookTransform()
+    {
+        headLookTransform = null;
+        if (characterModelRoot != null)
+        {
+            headLookTransform = FindTransformByName(characterModelRoot, headLookTransformName);
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, "head");
+            }
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, "tete");
+            }
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, "neck");
+            }
+        }
+        else
+        {
+            headLookTransform = head;
+        }
+
+        headLookBaseLocalRotation = headLookTransform != null
+            ? headLookTransform.localRotation
+            : Quaternion.identity;
+        currentHeadLookPitch = targetHeadLookPitch;
     }
 
     private void EnsureFallbackVisual(Transform part, string partName, Color color)
@@ -405,7 +623,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
         MoveLocal(head, new Vector3(0f, 0.36f + bodyBob * 0.5f, 0.08f), follow);
     }
 
-    private void UpdateCharacterAnimation(float speed01, float deltaTime)
+    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float deltaTime)
     {
         if (!driveWalkAnimation || characterAnimator == null)
         {
@@ -413,22 +631,39 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         bool isWalking = speed01 > walkAnimationMoveThreshold;
+        bool isWalkingBackward = isWalking && forwardAmount < -0.2f;
         float loopStart = Mathf.Clamp01(walkLoopStartNormalized);
         float loopEnd = Mathf.Clamp(walkLoopEndNormalized, loopStart + 0.01f, 1f);
         float stopStart = Mathf.Clamp(walkStopStartNormalized, loopStart, 1f);
+        float speedMultiplier = Mathf.Max(0.05f, flatSpeed / Mathf.Max(0.01f, walkAnimationReferenceSpeed));
+        float loopBaseTimeStep = deltaTime * Mathf.Max(0.01f, walkAnimationSpeed);
+        float loopTimeStep = loopBaseTimeStep * speedMultiplier;
+        float stopTimeStep = deltaTime * Mathf.Max(0.01f, walkStopAnimationSpeed);
 
         if (isWalking)
         {
-            if (!wasWalking)
+            if (!wasWalking || wasWalkingBackward != isWalkingBackward)
             {
-                walkAnimationTime = 0f;
+                walkAnimationTime = isWalkingBackward ? loopEnd : 0f;
             }
 
-            walkAnimationTime += deltaTime * Mathf.Max(0.01f, walkAnimationSpeed);
-            if (walkAnimationTime >= loopEnd)
+            if (isWalkingBackward)
             {
-                float loopLength = Mathf.Max(0.01f, loopEnd - loopStart);
-                walkAnimationTime = loopStart + Mathf.Repeat(walkAnimationTime - loopStart, loopLength);
+                walkAnimationTime -= loopTimeStep;
+                if (walkAnimationTime <= loopStart)
+                {
+                    float loopLength = Mathf.Max(0.01f, loopEnd - loopStart);
+                    walkAnimationTime = loopEnd - Mathf.Repeat(loopStart - walkAnimationTime, loopLength);
+                }
+            }
+            else
+            {
+                walkAnimationTime += loopTimeStep;
+                if (walkAnimationTime >= loopEnd)
+                {
+                    float loopLength = Mathf.Max(0.01f, loopEnd - loopStart);
+                    walkAnimationTime = loopStart + Mathf.Repeat(walkAnimationTime - loopStart, loopLength);
+                }
             }
         }
         else if (wasWalking)
@@ -437,10 +672,11 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
         else if (walkAnimationTime < 1f)
         {
-            walkAnimationTime = Mathf.Min(1f, walkAnimationTime + deltaTime * Mathf.Max(0.01f, walkAnimationSpeed));
+            walkAnimationTime = Mathf.Min(1f, walkAnimationTime + stopTimeStep);
         }
 
         wasWalking = isWalking;
+        wasWalkingBackward = isWalkingBackward;
         if (animatorController != null && !string.IsNullOrEmpty(walkAnimationStateName))
         {
             characterAnimator.SetBool(animatorWalkingBool, isWalking);
@@ -525,6 +761,27 @@ public sealed class TinyRaymanBody : MonoBehaviour
         MoveLocal(rightFoot, new Vector3(0.08f, footY + Mathf.Max(0f, rightPhase) * limbBobAmount * speed01, 0.04f + rightPhase * limbSwingAmount * speed01), follow);
     }
 
+    private void UpdateHeadLook(float deltaTime)
+    {
+        if (!driveHeadLookWithCamera)
+        {
+            return;
+        }
+
+        if (headLookTransform == null)
+        {
+            ResolveHeadLookTransform();
+            if (headLookTransform == null)
+            {
+                return;
+            }
+        }
+
+        float follow = 1f - Mathf.Exp(-headLookSharpness * deltaTime);
+        currentHeadLookPitch = Mathf.Lerp(currentHeadLookPitch, targetHeadLookPitch, follow);
+        headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(currentHeadLookPitch, 0f, 0f);
+    }
+
     private static void MoveLocal(Transform target, Vector3 localPosition, float follow)
     {
         if (target == null)
@@ -554,6 +811,31 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         target.rotation = Quaternion.Slerp(target.rotation, worldRotation, follow);
+    }
+
+    private static Transform FindTransformByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (root.name.Equals(name, StringComparison.OrdinalIgnoreCase)
+            || root.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindTransformByName(root.GetChild(i), name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
     }
 
     private static void SetWorld(Transform target, Vector3 worldPosition, Quaternion worldRotation)

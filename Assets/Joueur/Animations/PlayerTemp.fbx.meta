@@ -3,7 +3,32 @@ guid: 82c24ca848de5ba42893388241871b48
 ModelImporter:
   serializedVersion: 24200
   internalIDToNameTable: []
-  externalObjects: {}
+  externalObjects:
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: Mask.Joker.Black.001
+    second: {fileID: 2100000, guid: 2698ae6b878e65e4d8b466c9c371654f, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: Material.003
+    second: {fileID: 2100000, guid: 629e67026b18ac2408d5bc49e9d7d80b, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: Material.007
+    second: {fileID: 2100000, guid: 97881465f65c27b45a176fdb616dd7e5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: Tex_0004
+    second: {fileID: 2100000, guid: 069188417aa6c3e439d58202c4d816cf, type: 2}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: tex_0004
+    second: {fileID: 2800000, guid: 3950733ea41360b46b13891cc1880af3, type: 3}
   materials:
     materialImportMode: 2
     materialName: 0

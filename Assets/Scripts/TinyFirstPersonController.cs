@@ -337,6 +337,10 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         pitch = Mathf.Clamp(pitch - mouseDelta.y * mouseSensitivity * sensitivityMultiplier, minPitch, maxPitch);
         cameraPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
+        if (raymanBody != null)
+        {
+            raymanBody.SetCameraPitch(pitch);
+        }
     }
 
     private void Move()
