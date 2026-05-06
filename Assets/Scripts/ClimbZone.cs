@@ -26,14 +26,18 @@ public sealed class ClimbZone : MonoBehaviour
 
     public readonly struct Route
     {
-        public Route(Vector3 grabPosition, Vector3 landingPosition)
+        public Route(Vector3 grabPosition, Vector3 landingPosition, Vector3 leftHandAnchor, Vector3 rightHandAnchor)
         {
             GrabPosition = grabPosition;
             LandingPosition = landingPosition;
+            LeftHandAnchor = leftHandAnchor;
+            RightHandAnchor = rightHandAnchor;
         }
 
         public Vector3 GrabPosition { get; }
         public Vector3 LandingPosition { get; }
+        public Vector3 LeftHandAnchor { get; }
+        public Vector3 RightHandAnchor { get; }
     }
 
     public static IReadOnlyList<ClimbZone> RegisteredZones => registeredZones;
@@ -154,7 +158,8 @@ public sealed class ClimbZone : MonoBehaviour
             grabPosition -= climbDirection.normalized * grabForwardOffset;
         }
 
-        route = new Route(grabPosition, landingPosition);
+        GetHandAnchors(landingBounds, landingPosition, climbDirection, padding, out Vector3 leftHandAnchor, out Vector3 rightHandAnchor);
+        route = new Route(grabPosition, landingPosition, leftHandAnchor, rightHandAnchor);
         return true;
     }
 
@@ -183,6 +188,33 @@ public sealed class ClimbZone : MonoBehaviour
         }
 
         return Vector3.ProjectOnPlane(volume.transform.TransformDirection(localDirection), Vector3.up).normalized;
+    }
+
+    private static void GetHandAnchors(
+        Bounds landingBounds,
+        Vector3 landingPosition,
+        Vector3 climbDirection,
+        float padding,
+        out Vector3 leftHandAnchor,
+        out Vector3 rightHandAnchor)
+    {
+        Vector3 direction = climbDirection.sqrMagnitude > 0.0001f ? climbDirection.normalized : Vector3.forward;
+        Vector3 right = Vector3.Cross(Vector3.up, direction).normalized;
+        float handSpread = Mathf.Max(0.16f, padding * 1.6f);
+        float edgeInset = Mathf.Max(0.04f, padding * 0.35f);
+
+        Vector3 edgePoint = landingPosition - direction * edgeInset;
+        edgePoint.y = landingBounds.max.y + 0.015f;
+
+        leftHandAnchor = ClampToTop(landingBounds, edgePoint - right * handSpread * 0.5f, padding * 0.5f);
+        rightHandAnchor = ClampToTop(landingBounds, edgePoint + right * handSpread * 0.5f, padding * 0.5f);
+    }
+
+    private static Vector3 ClampToTop(Bounds bounds, Vector3 point, float padding)
+    {
+        Vector3 clamped = GetNearestTopPoint(bounds, point, padding);
+        clamped.y = point.y;
+        return clamped;
     }
 
     public bool ContainsPlayer(Vector3 playerPosition, CharacterController controller)

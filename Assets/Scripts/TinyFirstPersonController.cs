@@ -8,6 +8,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 {
     [Header("References")]
     [SerializeField] private Transform cameraPivot;
+    [SerializeField] private TinyRaymanBody raymanBody;
 
     [Header("Look")]
     [SerializeField] private float mouseSensitivity = 0.08f;
@@ -27,6 +28,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float crouchingHeight = 0.32f;
     [SerializeField] private float standingEyeHeight = 0.43f;
     [SerializeField] private float crouchingEyeHeight = 0.25f;
+    [SerializeField] private float cameraForwardOffset = 0.12f;
     [SerializeField] private float crouchLerpSpeed = 14f;
 
     [Header("Camera Bob")]
@@ -46,6 +48,20 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField, Range(90f, 170f)] private float maxClimbFacingAngle = 115f;
     [SerializeField] private LayerMask landingClearanceMask = ~0;
 
+    [Header("Items")]
+    [SerializeField] private float itemLookDistance = 0.85f;
+    [SerializeField] private LayerMask itemInteractionMask = ~0;
+    [SerializeField] private Vector3 heldItemLocalPosition = new Vector3(0f, -0.08f, 0.48f);
+    [SerializeField] private float heldItemBobAmount = 0.018f;
+    [SerializeField] private float heldItemIdleBobAmount = 0.006f;
+    [SerializeField] private float heldItemIdleBobSpeed = 3f;
+    [SerializeField] private float heldItemMotionSharpness = 14f;
+    [SerializeField] private float itemThrowForce = 4.5f;
+    [SerializeField] private float itemThrowWeightSlowdown = 0.12f;
+    [SerializeField, Range(0.15f, 1f)] private float minimumCarrySpeedMultiplier = 0.35f;
+    [SerializeField, Min(0f)] private float carryWeightSlowdown = 0.08f;
+    [SerializeField] private Color itemHighlightColor = new Color(1f, 0.92f, 0.18f, 1f);
+
     [Header("Debug")]
     [SerializeField] private bool showClimbZonesInGame;
     [SerializeField] private Color climbZoneDebugColor = new Color(0.1f, 0.65f, 1f, 0.95f);
@@ -62,10 +78,23 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private float pitch;
     private bool isClimbing;
     private float climbCameraOffset;
+    private TinyItem focusedItem;
+    private TinyItem heldItem;
+    private Transform itemHoldPoint;
+    private float heldItemMotionTimer;
 
     private void Awake()
     {
         controller = GetComponent<CharacterController>();
+        if (raymanBody == null)
+        {
+            raymanBody = GetComponent<TinyRaymanBody>();
+        }
+
+        if (raymanBody == null)
+        {
+            raymanBody = gameObject.AddComponent<TinyRaymanBody>();
+        }
 
         if (cameraPivot == null && Camera.main != null)
         {
@@ -100,7 +129,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
         }
-        else if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame)
+        else if (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame && heldItem == null)
         {
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
@@ -113,13 +142,39 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             return;
         }
 
+        Look(1f);
+
+        if (Mouse.current != null && heldItem != null)
+        {
+            if (Mouse.current.leftButton.wasPressedThisFrame)
+            {
+                ReleaseHeldItem(false);
+                return;
+            }
+
+            if (Mouse.current.rightButton.wasPressedThisFrame)
+            {
+                ReleaseHeldItem(true);
+                return;
+            }
+        }
+
+        UpdateItemFocus();
+
+        if (Keyboard.current.eKey.wasPressedThisFrame && focusedItem != null)
+        {
+            PickUpItem(focusedItem);
+            return;
+        }
+
         if (Keyboard.current.eKey.wasPressedThisFrame && TryGetBestClimbRoute(out ClimbZone.Route route))
         {
             StartCoroutine(ClimbTo(route));
             return;
         }
 
-        Look(1f);
+        UpdateHeldItemMotion();
+        UpdateHeldItemHands();
         Move();
         UpdateCrouch();
         UpdateCameraBob();
@@ -150,7 +205,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void OnRenderObject()
     {
-        if (!showClimbZonesInGame || !EnsureDebugLineMaterial())
+        if ((!showClimbZonesInGame && focusedItem == null) || !EnsureDebugLineMaterial())
         {
             return;
         }
@@ -158,24 +213,50 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         debugLineMaterial.SetPass(0);
         GL.PushMatrix();
 
-        IReadOnlyList<ClimbZone> zones = ClimbZone.RegisteredZones;
-        for (int i = 0; i < zones.Count; i++)
+        if (showClimbZonesInGame)
         {
-            ClimbZone zone = zones[i];
-            if (zone == null || !zone.isActiveAndEnabled)
+            IReadOnlyList<ClimbZone> zones = ClimbZone.RegisteredZones;
+            for (int i = 0; i < zones.Count; i++)
             {
-                continue;
-            }
+                ClimbZone zone = zones[i];
+                if (zone == null || !zone.isActiveAndEnabled)
+                {
+                    continue;
+                }
 
-            DrawRuntimeWireBox(zone.VolumeCollider, climbZoneDebugColor);
+                DrawRuntimeWireBox(zone.VolumeCollider, climbZoneDebugColor);
 
-            if (zone.LandingZoneOverride != null)
-            {
-                DrawRuntimeWireBox(zone.LandingZoneOverride, landingZoneDebugColor);
+                if (zone.LandingZoneOverride != null)
+                {
+                    DrawRuntimeWireBox(zone.LandingZoneOverride, landingZoneDebugColor);
+                }
             }
         }
 
+        if (focusedItem != null)
+        {
+            DrawRuntimeWireBounds(focusedItem.GetWorldBounds(), itemHighlightColor);
+        }
+
         GL.PopMatrix();
+    }
+
+    private void OnGUI()
+    {
+        if (focusedItem == null)
+        {
+            return;
+        }
+
+        const float width = 240f;
+        const float height = 112f;
+        Rect rect = new Rect((Screen.width - width) * 0.5f, Screen.height * 0.58f, width, height);
+
+        GUI.Box(rect, string.Empty);
+        GUI.Label(new Rect(rect.x + 14f, rect.y + 10f, width - 28f, 22f), focusedItem.ItemName);
+        GUI.Label(new Rect(rect.x + 14f, rect.y + 36f, width - 28f, 20f), "Poids : " + focusedItem.WeightKilograms.ToString("0.##") + " kg");
+        GUI.Label(new Rect(rect.x + 14f, rect.y + 58f, width - 28f, 20f), "Prix : " + focusedItem.Value + " $");
+        GUI.Label(new Rect(rect.x + 14f, rect.y + 84f, width - 28f, 20f), "[E] Prendre");
     }
 
     private void OnDrawGizmos()
@@ -223,6 +304,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         bool isCrouching = IsCrouchHeld();
         float targetSpeed = isCrouching ? crouchSpeed : IsSprintHeld() ? sprintSpeed : walkSpeed;
+        targetSpeed *= GetCarrySpeedMultiplier();
         Vector3 targetVelocity = targetDirection * targetSpeed;
         horizontalVelocity = Vector3.Lerp(horizontalVelocity, targetVelocity, acceleration * Time.deltaTime);
 
@@ -245,6 +327,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private bool TryGetBestClimbRoute(out ClimbZone.Route bestRoute)
     {
         bestRoute = default;
+        if (heldItem != null)
+        {
+            return false;
+        }
+
         float bestScore = float.PositiveInfinity;
 
         for (int i = climbZones.Count - 1; i >= 0; i--)
@@ -332,6 +419,10 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         climbCameraOffset = 0f;
         currentEyeHeight = standingEyeHeight;
         ConfigureTinyBody(standingHeight);
+        if (raymanBody != null)
+        {
+            raymanBody.AttachHands(route.LeftHandAnchor, route.RightHandAnchor);
+        }
 
         controller.enabled = false;
 
@@ -369,6 +460,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         climbCameraOffset = 0f;
         currentEyeHeight = standingEyeHeight;
         ApplyCameraHeight(true);
+        if (raymanBody != null)
+        {
+            raymanBody.ReleaseHands();
+        }
+
         isClimbing = false;
     }
 
@@ -470,10 +566,138 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             return;
         }
 
-        Vector3 targetPosition = new Vector3(0f, currentEyeHeight + bobOffset + climbCameraOffset, 0f);
+        Vector3 targetPosition = new Vector3(0f, currentEyeHeight + bobOffset + climbCameraOffset, cameraForwardOffset);
         cameraPivot.localPosition = snap
             ? targetPosition
             : Vector3.Lerp(cameraPivot.localPosition, targetPosition, crouchLerpSpeed * Time.deltaTime);
+    }
+
+    private void UpdateItemFocus()
+    {
+        focusedItem = null;
+        if (cameraPivot == null || heldItem != null)
+        {
+            return;
+        }
+
+        Ray ray = new Ray(cameraPivot.position, cameraPivot.forward);
+        if (!Physics.Raycast(ray, out RaycastHit hit, itemLookDistance, itemInteractionMask, QueryTriggerInteraction.Collide))
+        {
+            return;
+        }
+
+        TinyItem item = hit.collider.GetComponentInParent<TinyItem>();
+        if (item != null && !item.IsHeld)
+        {
+            focusedItem = item;
+        }
+    }
+
+    private void PickUpItem(TinyItem item)
+    {
+        if (item == null || cameraPivot == null)
+        {
+            return;
+        }
+
+        EnsureItemHoldPoint();
+        item.PickUp(itemHoldPoint);
+        heldItem = item;
+        heldItemMotionTimer = 0f;
+        focusedItem = null;
+        UpdateHeldItemMotion(true);
+        UpdateHeldItemHands();
+    }
+
+    private void ReleaseHeldItem(bool throwItem)
+    {
+        if (heldItem == null)
+        {
+            return;
+        }
+
+        TinyItem item = heldItem;
+        heldItem = null;
+        focusedItem = null;
+
+        Vector3 dropPosition = item.transform.position;
+        Quaternion dropRotation = item.transform.rotation;
+        if (throwItem)
+        {
+            Vector3 throwDirection = cameraPivot != null ? cameraPivot.forward : transform.forward;
+            float force = itemThrowForce / (1f + item.WeightKilograms * itemThrowWeightSlowdown);
+            item.Throw(dropPosition, dropRotation, throwDirection.normalized * force);
+        }
+        else
+        {
+            item.Drop(dropPosition, dropRotation);
+        }
+
+        if (raymanBody != null)
+        {
+            raymanBody.ReleaseHands();
+        }
+    }
+
+    private void EnsureItemHoldPoint()
+    {
+        if (itemHoldPoint != null)
+        {
+            return;
+        }
+
+        GameObject holdPointObject = new GameObject("__Item_Hold_Point");
+        itemHoldPoint = holdPointObject.transform;
+        itemHoldPoint.SetParent(cameraPivot, false);
+        itemHoldPoint.localPosition = heldItemLocalPosition;
+        itemHoldPoint.localRotation = Quaternion.identity;
+        itemHoldPoint.localScale = Vector3.one;
+    }
+
+    private void UpdateHeldItemMotion(bool snap = false)
+    {
+        if (heldItem == null || itemHoldPoint == null)
+        {
+            return;
+        }
+
+        Vector2 moveInput = ReadMoveInput();
+        bool isMoving = moveInput.sqrMagnitude > 0.01f && horizontalVelocity.sqrMagnitude > 0.01f && controller.isGrounded;
+        float speed = isMoving ? IsSprintHeld() ? sprintBobSpeed : walkBobSpeed : heldItemIdleBobSpeed;
+        heldItemMotionTimer += Time.deltaTime * speed;
+
+        float weightDampen = 1f / (1f + heldItem.WeightKilograms * 0.08f);
+        float bobAmount = isMoving ? heldItemBobAmount : heldItemIdleBobAmount;
+        float wave = Mathf.Sin(heldItemMotionTimer);
+        Vector3 targetLocalPosition = heldItemLocalPosition
+            + Vector3.up * (wave * bobAmount * weightDampen);
+
+        float follow = 1f - Mathf.Exp(-heldItemMotionSharpness * Time.deltaTime);
+        itemHoldPoint.localPosition = snap
+            ? targetLocalPosition
+            : Vector3.Lerp(itemHoldPoint.localPosition, targetLocalPosition, follow);
+    }
+
+    private void UpdateHeldItemHands()
+    {
+        if (heldItem == null || raymanBody == null)
+        {
+            return;
+        }
+
+        heldItem.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
+        raymanBody.AttachHands(leftAnchor, rightAnchor);
+    }
+
+    private float GetCarrySpeedMultiplier()
+    {
+        if (heldItem == null)
+        {
+            return 1f;
+        }
+
+        float multiplier = 1f / (1f + heldItem.WeightKilograms * carryWeightSlowdown);
+        return Mathf.Max(minimumCarrySpeedMultiplier, multiplier);
     }
 
     private static bool EnsureDebugLineMaterial()
@@ -520,6 +744,37 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         Vector3 p5 = matrix.MultiplyPoint3x4(center + new Vector3(extents.x, extents.y, -extents.z));
         Vector3 p6 = matrix.MultiplyPoint3x4(center + new Vector3(extents.x, extents.y, extents.z));
         Vector3 p7 = matrix.MultiplyPoint3x4(center + new Vector3(-extents.x, extents.y, extents.z));
+
+        GL.Begin(GL.LINES);
+        GL.Color(color);
+        DrawLine(p0, p1);
+        DrawLine(p1, p2);
+        DrawLine(p2, p3);
+        DrawLine(p3, p0);
+        DrawLine(p4, p5);
+        DrawLine(p5, p6);
+        DrawLine(p6, p7);
+        DrawLine(p7, p4);
+        DrawLine(p0, p4);
+        DrawLine(p1, p5);
+        DrawLine(p2, p6);
+        DrawLine(p3, p7);
+        GL.End();
+    }
+
+    private static void DrawRuntimeWireBounds(Bounds bounds, Color color)
+    {
+        Vector3 min = bounds.min;
+        Vector3 max = bounds.max;
+
+        Vector3 p0 = new Vector3(min.x, min.y, min.z);
+        Vector3 p1 = new Vector3(max.x, min.y, min.z);
+        Vector3 p2 = new Vector3(max.x, min.y, max.z);
+        Vector3 p3 = new Vector3(min.x, min.y, max.z);
+        Vector3 p4 = new Vector3(min.x, max.y, min.z);
+        Vector3 p5 = new Vector3(max.x, max.y, min.z);
+        Vector3 p6 = new Vector3(max.x, max.y, max.z);
+        Vector3 p7 = new Vector3(min.x, max.y, max.z);
 
         GL.Begin(GL.LINES);
         GL.Color(color);
