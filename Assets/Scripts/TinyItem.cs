@@ -13,6 +13,10 @@ public sealed class TinyItem : MonoBehaviour
     [SerializeField] private Vector3 holdLocalPosition = Vector3.zero;
     [SerializeField] private Vector3 holdLocalEulerAngles = Vector3.zero;
     [SerializeField, Range(0.05f, 0.45f)] private float handAnchorWidth = 0.18f;
+    [SerializeField] private Vector3 leftHandGripLocalOffset = Vector3.zero;
+    [SerializeField] private Vector3 rightHandGripLocalOffset = Vector3.zero;
+    [SerializeField] private Vector3 leftHandGripEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 rightHandGripEulerAngles = Vector3.zero;
 
     [Header("Physics")]
     [SerializeField] private bool configurePhysics = true;
@@ -55,6 +59,11 @@ public sealed class TinyItem : MonoBehaviour
 
     public void PickUp(Transform holdPoint)
     {
+        PickUp(holdPoint, false);
+    }
+
+    public void PickUp(Transform holdPoint, bool preserveWorldPose)
+    {
         if (holdPoint == null || IsHeld)
         {
             return;
@@ -76,14 +85,23 @@ public sealed class TinyItem : MonoBehaviour
 
         SetCollidersEnabled(false);
 
-        transform.SetParent(holdPoint, false);
-        ApplyHeldLocalPose();
+        transform.SetParent(holdPoint, preserveWorldPose);
+        if (!preserveWorldPose)
+        {
+            ApplyHeldLocalPose();
+        }
     }
 
     public void ApplyHeldLocalPose()
     {
         transform.localPosition = holdLocalPosition;
         transform.localRotation = Quaternion.Euler(holdLocalEulerAngles);
+    }
+
+    public void GetHoldLocalPose(out Vector3 localPosition, out Quaternion localRotation)
+    {
+        localPosition = holdLocalPosition;
+        localRotation = Quaternion.Euler(holdLocalEulerAngles);
     }
 
     public void Drop(Vector3 worldPosition, Quaternion worldRotation)
@@ -128,12 +146,19 @@ public sealed class TinyItem : MonoBehaviour
     public void GetHandAnchors(Transform playerRoot, out Vector3 leftAnchor, out Vector3 rightAnchor)
     {
         Bounds bounds = GetWorldBounds();
-        Vector3 side = playerRoot != null ? playerRoot.right : transform.right;
+        Vector3 side = transform.right;
         Vector3 center = bounds.center;
         float halfWidth = Mathf.Max(handAnchorWidth * 0.5f, 0.04f);
 
-        leftAnchor = center - side * halfWidth;
-        rightAnchor = center + side * halfWidth;
+        leftAnchor = center - side * halfWidth + transform.TransformVector(leftHandGripLocalOffset);
+        rightAnchor = center + side * halfWidth + transform.TransformVector(rightHandGripLocalOffset);
+    }
+
+    public void GetHandRotations(Transform playerRoot, out Quaternion leftRotation, out Quaternion rightRotation)
+    {
+        Quaternion baseRotation = transform.rotation;
+        leftRotation = baseRotation * Quaternion.Euler(leftHandGripEulerAngles);
+        rightRotation = baseRotation * Quaternion.Euler(rightHandGripEulerAngles);
     }
 
     public Bounds GetWorldBounds()

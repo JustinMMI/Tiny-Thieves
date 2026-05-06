@@ -24,20 +24,34 @@ public sealed class ClimbZone : MonoBehaviour
     [SerializeField] private float activationPadding = 0.12f;
     [SerializeField] private bool requirePlayerBelowLanding = true;
 
+    [Header("Hands")]
+    [SerializeField] private Vector3 leftHandLocalEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 rightHandLocalEulerAngles = Vector3.zero;
+
     public readonly struct Route
     {
-        public Route(Vector3 grabPosition, Vector3 landingPosition, Vector3 leftHandAnchor, Vector3 rightHandAnchor)
+        public Route(
+            Vector3 grabPosition,
+            Vector3 landingPosition,
+            Vector3 leftHandAnchor,
+            Vector3 rightHandAnchor,
+            Quaternion leftHandRotation,
+            Quaternion rightHandRotation)
         {
             GrabPosition = grabPosition;
             LandingPosition = landingPosition;
             LeftHandAnchor = leftHandAnchor;
             RightHandAnchor = rightHandAnchor;
+            LeftHandRotation = leftHandRotation;
+            RightHandRotation = rightHandRotation;
         }
 
         public Vector3 GrabPosition { get; }
         public Vector3 LandingPosition { get; }
         public Vector3 LeftHandAnchor { get; }
         public Vector3 RightHandAnchor { get; }
+        public Quaternion LeftHandRotation { get; }
+        public Quaternion RightHandRotation { get; }
     }
 
     public static IReadOnlyList<ClimbZone> RegisteredZones => registeredZones;
@@ -159,8 +173,22 @@ public sealed class ClimbZone : MonoBehaviour
         }
 
         GetHandAnchors(landingBounds, landingPosition, climbDirection, padding, out Vector3 leftHandAnchor, out Vector3 rightHandAnchor);
-        route = new Route(grabPosition, landingPosition, leftHandAnchor, rightHandAnchor);
+        GetHandRotations(climbDirection, out Quaternion leftHandRotation, out Quaternion rightHandRotation);
+        route = new Route(grabPosition, landingPosition, leftHandAnchor, rightHandAnchor, leftHandRotation, rightHandRotation);
         return true;
+    }
+
+    private void GetHandRotations(Vector3 climbDirection, out Quaternion leftHandRotation, out Quaternion rightHandRotation)
+    {
+        Vector3 direction = Vector3.ProjectOnPlane(climbDirection, Vector3.up);
+        if (direction.sqrMagnitude < 0.0001f)
+        {
+            direction = transform.forward;
+        }
+
+        Quaternion edgeRotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
+        leftHandRotation = edgeRotation * Quaternion.Euler(leftHandLocalEulerAngles);
+        rightHandRotation = edgeRotation * Quaternion.Euler(rightHandLocalEulerAngles);
     }
 
     private static Vector3 GetClimbDirection(Vector3 playerPosition, Bounds climbBounds, Bounds landingBounds, BoxCollider volume)

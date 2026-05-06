@@ -24,21 +24,36 @@ public sealed class TinyRailWagon : MonoBehaviour
     [Header("Interaction")]
     [SerializeField] private float interactDistance = 0.9f;
     [SerializeField] private float handAnchorWidth = 0.28f;
-    [SerializeField] private Vector3 handAnchorLocalCenter = new Vector3(0f, 0.22f, -0.28f);
-    [SerializeField] private Vector3 handAnchorLocalEulerAngles = Vector3.zero;
-    [SerializeField] private Vector3 playerOffset = new Vector3(0f, 0f, -0.42f);
+    [FormerlySerializedAs("handAnchorLocalCenter")]
+    [SerializeField] private Vector3 backHandAnchorLocalCenter = new Vector3(0f, 0.22f, -0.28f);
+    [SerializeField] private Vector3 frontHandAnchorLocalCenter = new Vector3(0f, 0.22f, 0.28f);
+    [FormerlySerializedAs("handAnchorLocalEulerAngles")]
+    [SerializeField] private Vector3 leftHandAnchorLocalEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 rightHandAnchorLocalEulerAngles = Vector3.zero;
+    [FormerlySerializedAs("playerOffset")]
+    [SerializeField] private Vector3 backPlayerOffset = new Vector3(0f, 0f, -0.42f);
+    [SerializeField] private Vector3 frontPlayerOffset = new Vector3(0f, 0f, 0.42f);
+
+    [Header("Wheels")]
+    [SerializeField] private Transform[] wheels;
+    [SerializeField] private bool[] invertWheelRotation;
+    [SerializeField] private float wheelRotationDegreesPerMeter = 720f;
 
     private BoxCollider wagonCollider;
     private Rigidbody wagonRigidbody;
     private Vector3 targetPhysicsPosition;
     private Quaternion targetPhysicsRotation = Quaternion.identity;
     private bool hasTargetPhysicsPose;
+    private float wheelRollAngle;
+    private Quaternion[] wheelBaseLocalRotations;
 
     public float InteractDistance => interactDistance;
 
     private void Awake()
     {
         CacheComponents();
+        CacheWheelRotations();
+        MatchWheelSettingsLength();
         ConfigurePhysics();
         ApplyRailPose(true);
     }
@@ -46,6 +61,8 @@ public sealed class TinyRailWagon : MonoBehaviour
     private void OnValidate()
     {
         CacheComponents();
+        CacheWheelRotations();
+        MatchWheelSettingsLength();
         horizontalRotationSharpness = Mathf.Max(0f, horizontalRotationSharpness);
         verticalRotationSharpness = Mathf.Max(0f, verticalRotationSharpness);
         ConfigurePhysics();
@@ -83,7 +100,9 @@ public sealed class TinyRailWagon : MonoBehaviour
 
         Vector3 previousPosition = GetReferencePosition();
         int side = GetPlayerSide(player);
+        float previousDistance = distanceOnRail;
         distanceOnRail = railPath.ClampDistance(distanceOnRail + input * side * pushSpeed * deltaTime);
+        RotateWheels(distanceOnRail - previousDistance);
         Vector3 targetPosition = ApplyRailPose(false);
         return targetPosition - previousPosition;
     }
@@ -91,20 +110,18 @@ public sealed class TinyRailWagon : MonoBehaviour
     public Vector3 GetPlayerFollowPosition(Transform player)
     {
         int side = GetPlayerSide(player);
-        Vector3 offset = playerOffset;
-        offset.z = Mathf.Abs(offset.z) * -side;
+        Vector3 offset = side < 0 ? frontPlayerOffset : backPlayerOffset;
         return GetReferencePosition() + GetReferenceRotation() * offset;
     }
 
     public void GetHandAnchors(Transform player, out Vector3 leftAnchor, out Vector3 rightAnchor)
     {
         int side = GetPlayerSide(player);
-        Vector3 center = handAnchorLocalCenter;
-        center.z = Mathf.Abs(center.z) * -side;
+        Vector3 center = side < 0 ? frontHandAnchorLocalCenter : backHandAnchorLocalCenter;
 
         Quaternion referenceRotation = GetReferenceRotation();
         Vector3 worldCenter = GetReferencePosition() + referenceRotation * center;
-        Vector3 sideVector = referenceRotation * Vector3.right;
+        Vector3 sideVector = referenceRotation * Vector3.right * side;
         float halfWidth = Mathf.Max(0.04f, handAnchorWidth * 0.5f);
         leftAnchor = worldCenter - sideVector * halfWidth;
         rightAnchor = worldCenter + sideVector * halfWidth;
@@ -114,7 +131,14 @@ public sealed class TinyRailWagon : MonoBehaviour
     {
         int side = GetPlayerSide(player);
         Quaternion sideRotation = side < 0 ? Quaternion.Euler(0f, 180f, 0f) : Quaternion.identity;
-        return GetReferenceRotation() * sideRotation * Quaternion.Euler(handAnchorLocalEulerAngles);
+        return GetReferenceRotation() * sideRotation;
+    }
+
+    public void GetHandRotations(Transform player, out Quaternion leftRotation, out Quaternion rightRotation)
+    {
+        Quaternion baseRotation = GetHandRotation(player);
+        leftRotation = baseRotation * Quaternion.Euler(leftHandAnchorLocalEulerAngles);
+        rightRotation = baseRotation * Quaternion.Euler(rightHandAnchorLocalEulerAngles);
     }
 
     public Bounds GetWorldBounds()
@@ -204,6 +228,69 @@ public sealed class TinyRailWagon : MonoBehaviour
         wagonRigidbody.useGravity = false;
         wagonRigidbody.interpolation = RigidbodyInterpolation.Interpolate;
         wagonRigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+    }
+
+    private void RotateWheels(float distanceDelta)
+    {
+        if (wheels == null || wheels.Length == 0 || Mathf.Abs(distanceDelta) < 0.00001f)
+        {
+            return;
+        }
+
+        wheelRollAngle -= distanceDelta * wheelRotationDegreesPerMeter;
+        for (int i = 0; i < wheels.Length; i++)
+        {
+            if (wheels[i] != null)
+            {
+                Quaternion baseRotation = wheelBaseLocalRotations != null && i < wheelBaseLocalRotations.Length
+                    ? wheelBaseLocalRotations[i]
+                    : Quaternion.identity;
+                float direction = invertWheelRotation != null && i < invertWheelRotation.Length && invertWheelRotation[i] ? -1f : 1f;
+                wheels[i].localRotation = baseRotation * Quaternion.Euler(0f, 0f, wheelRollAngle * direction);
+            }
+        }
+    }
+
+    private void CacheWheelRotations()
+    {
+        if (wheels == null)
+        {
+            wheelBaseLocalRotations = null;
+            return;
+        }
+
+        wheelBaseLocalRotations = new Quaternion[wheels.Length];
+        for (int i = 0; i < wheels.Length; i++)
+        {
+            wheelBaseLocalRotations[i] = wheels[i] != null ? wheels[i].localRotation : Quaternion.identity;
+        }
+    }
+
+    private void MatchWheelSettingsLength()
+    {
+        if (wheels == null)
+        {
+            invertWheelRotation = null;
+            return;
+        }
+
+        if (invertWheelRotation != null && invertWheelRotation.Length == wheels.Length)
+        {
+            return;
+        }
+
+        bool[] previous = invertWheelRotation;
+        invertWheelRotation = new bool[wheels.Length];
+        if (previous == null)
+        {
+            return;
+        }
+
+        int count = Mathf.Min(previous.Length, invertWheelRotation.Length);
+        for (int i = 0; i < count; i++)
+        {
+            invertWheelRotation[i] = previous[i];
+        }
     }
 
     private void MoveWagon(Vector3 targetPosition, Quaternion targetRotation, bool snap)
