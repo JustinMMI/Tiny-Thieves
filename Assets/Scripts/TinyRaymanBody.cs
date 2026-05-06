@@ -21,6 +21,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private float limbSwingAmount = 0.055f;
     [SerializeField] private float handGripSharpness = 22f;
     [SerializeField] private float handGripLift = 0.02f;
+    [SerializeField] private Vector3 attachedHandWorldEulerAngles = Vector3.zero;
 
     [Header("Colors")]
     [SerializeField] private Color torsoColor = new Color(0.15f, 0.42f, 1f, 1f);
@@ -45,6 +46,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private bool handsAttached;
     private Vector3 leftHandAnchor;
     private Vector3 rightHandAnchor;
+    private Quaternion attachedHandRotation;
 
     private void Awake()
     {
@@ -85,9 +87,15 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
     {
+        AttachHands(leftAnchor, rightAnchor, Quaternion.Euler(attachedHandWorldEulerAngles));
+    }
+
+    public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor, Quaternion worldRotation)
+    {
         handsAttached = true;
         leftHandAnchor = leftAnchor + Vector3.up * handGripLift;
         rightHandAnchor = rightAnchor + Vector3.up * handGripLift;
+        attachedHandRotation = worldRotation;
     }
 
     public void ReleaseHands()
@@ -180,6 +188,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
             float gripFollow = 1f - Mathf.Exp(-handGripSharpness * deltaTime);
             MoveWorld(leftHand, leftHandAnchor, gripFollow);
             MoveWorld(rightHand, rightHandAnchor, gripFollow);
+            RotateWorld(leftHand, attachedHandRotation, gripFollow);
+            RotateWorld(rightHand, attachedHandRotation, gripFollow);
             return;
         }
 
@@ -218,6 +228,16 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         target.position = Vector3.Lerp(target.position, worldPosition, follow);
+    }
+
+    private static void RotateWorld(Transform target, Quaternion worldRotation, float follow)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        target.rotation = Quaternion.Slerp(target.rotation, worldRotation, follow);
     }
 
     private static Material CreateMaterial(string name, Color color)
