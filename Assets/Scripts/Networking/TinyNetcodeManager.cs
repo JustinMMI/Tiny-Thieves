@@ -263,7 +263,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             catch (Exception exception)
             {
                 networkStartInProgress = false;
-                Debug.LogWarning("Tiny Relay client failed, will retry. " + exception.Message);
+                Debug.LogWarning("Tiny Relay client failed, will retry.\n" + exception);
                 return false;
             }
         }
@@ -313,7 +313,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             }
             catch (Exception exception)
             {
-                Debug.LogWarning("Tiny Relay host failed, falling back to local transport. " + exception.Message);
+                Debug.LogWarning("Tiny Relay host failed, falling back to local transport.\n" + exception);
             }
         }
 #endif
