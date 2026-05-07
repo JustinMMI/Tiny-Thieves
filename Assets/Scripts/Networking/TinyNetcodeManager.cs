@@ -1,14 +1,28 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
 using Unity.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
 
+#if TINY_HAS_RELAY
+using Unity.Services.Authentication;
+using Unity.Services.Core;
+using Unity.Services.Multiplayer;
+using Unity.Services.Relay;
+using Unity.Services.Relay.Models;
+#endif
+
 public sealed class TinyNetcodeManager : MonoBehaviour
 {
     private const ushort Port = 7777;
     private const string Localhost = "127.0.0.1";
+    private const bool UseUnityRelay = true;
+    private const int MaxRelayConnections = 3;
+    private const string RelayConnectionType = "udp";
+    private const string RelayJoinCodeFileName = "relay_join_code.txt";
     private const float PlayerSendInterval = 0.016f;
     private const float EntitySendInterval = 0.016f;
     private const float ClientRetryInterval = 1f;
@@ -17,6 +31,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const float RemoteEntitySnapDistance = 0.7f;
     private const float RemoteEntityTargetLifetime = 0.08f;
     private const float EntityAuthorityHoldTime = 0.35f;
+    private const float WagonPushInputTimeout = 0.12f;
     private const string PlayerStateMessage = "TinyPlayerState";
     private const string EntityStateMessage = "TinyEntityState";
     private const string WorldIntentMessage = "TinyWorldIntent";
@@ -30,6 +45,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private readonly Dictionary<string, PoseState> lastSentEntityPoses = new Dictionary<string, PoseState>();
     private readonly Dictionary<string, EntityAuthority> entityAuthorities = new Dictionary<string, EntityAuthority>();
     private readonly Dictionary<string, ulong> heldEntityOwners = new Dictionary<string, ulong>();
+    private readonly Dictionary<ulong, WagonPushState> activeWagonPushes = new Dictionary<ulong, WagonPushState>();
 
     private static TinyNetcodeManager instance;
     private NetworkManager networkManager;
@@ -39,6 +55,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private float entitySendTimer;
     private float clientRetryTimer;
     private bool started;
+    private bool networkStartInProgress;
     private bool handlersRegistered;
     private bool callbacksRegistered;
     private int appliedLocalSkin = -1;
@@ -91,6 +108,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         RegisterMessageHandlers();
         ApplyLocalSkin();
+        ProcessServerWagonPushes();
         SendLocalState();
         UpdateRemotePlayers();
         ApplyRemoteEntityTargets();
@@ -107,6 +125,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         if (networkManager != null && callbacksRegistered)
         {
+            networkManager.OnClientConnectedCallback -= OnClientConnected;
             networkManager.OnClientDisconnectCallback -= OnClientDisconnect;
         }
 
@@ -165,6 +184,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         if (!callbacksRegistered)
         {
+            networkManager.OnClientConnectedCallback += OnClientConnected;
             networkManager.OnClientDisconnectCallback += OnClientDisconnect;
             callbacksRegistered = true;
         }
@@ -172,21 +192,30 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void StartNetworkRole()
     {
-        if (started || networkManager == null)
+        if (started || networkStartInProgress || networkManager == null)
         {
             return;
         }
 
-        started = true;
+        _ = StartNetworkRoleAsync();
+    }
+
+    private async Task StartNetworkRoleAsync()
+    {
+        if (started || networkStartInProgress || networkManager == null)
+        {
+            return;
+        }
+
         if (IsEditorHost())
         {
-            bool ok = networkManager.StartHost();
-            Debug.Log(ok ? "Tiny Netcode started as Editor host." : "Tiny Netcode host failed to start.");
+            started = await TryStartHostAsync();
         }
         else
         {
-            TryStartClient();
+            started = await TryStartClientAsync();
         }
+
     }
 
     private void RetryClientStart()
@@ -198,35 +227,256 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         clientRetryTimer = ClientRetryInterval;
-        TryStartClient();
+        _ = TryStartClientAsync();
     }
 
-    private void TryStartClient()
+    private async Task<bool> TryStartClientAsync()
     {
-        if (networkManager == null || networkManager.IsListening)
+        if (networkManager == null || networkManager.IsListening || networkStartInProgress)
         {
-            return;
+            return false;
         }
 
+#if TINY_HAS_RELAY
+        if (UseUnityRelay)
+        {
+            networkStartInProgress = true;
+            string joinCode = GetRelayJoinCode();
+            if (string.IsNullOrWhiteSpace(joinCode))
+            {
+                networkStartInProgress = false;
+                Debug.Log("Tiny Relay client waiting for a join code. Use -join CODE or put the code in " + GetRelayJoinCodePath());
+                return false;
+            }
+
+            try
+            {
+                await EnsureUnityServicesSignedInAsync();
+                var allocation = await RelayService.Instance.JoinAllocationAsync(joinCode);
+                transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, RelayConnectionType));
+
+                bool relayOk = networkManager.StartClient();
+                networkStartInProgress = false;
+                Debug.Log(relayOk
+                    ? "Tiny Netcode client joining Relay room " + joinCode + "."
+                    : "Tiny Netcode Relay client failed to start, will retry.");
+                return relayOk;
+            }
+            catch (Exception exception)
+            {
+                networkStartInProgress = false;
+                Debug.LogWarning("Tiny Relay client failed, will retry.\n" + exception);
+                return false;
+            }
+        }
+#endif
+
+        networkStartInProgress = true;
         transport.SetConnectionData(Localhost, Port, Localhost);
         bool ok = networkManager.StartClient();
+        networkStartInProgress = false;
         Debug.Log(ok
             ? "Tiny Netcode client trying to join " + Localhost + ":" + Port
             : "Tiny Netcode client failed to start, will retry.");
+        return ok;
+    }
+
+    private async Task<bool> TryStartHostAsync()
+    {
+        if (networkManager == null || networkManager.IsListening || networkStartInProgress)
+        {
+            return false;
+        }
+
+        networkStartInProgress = true;
+#if TINY_HAS_RELAY
+        if (UseUnityRelay)
+        {
+            try
+            {
+                await EnsureUnityServicesSignedInAsync();
+                var allocation = await RelayService.Instance.CreateAllocationAsync(MaxRelayConnections);
+                string joinCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
+                transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, RelayConnectionType));
+
+                bool relayOk = networkManager.StartHost();
+                if (relayOk)
+                {
+                    WriteRelayJoinCode(joinCode);
+                    Debug.Log("Tiny Netcode started as Relay host. Join code: " + joinCode + " (saved to " + GetRelayJoinCodePath() + ")");
+                }
+                else
+                {
+                    Debug.LogWarning("Tiny Netcode Relay host failed to start.");
+                }
+
+                networkStartInProgress = false;
+                return relayOk;
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("Tiny Relay host failed, falling back to local transport.\n" + exception);
+            }
+        }
+#endif
+
+        transport.SetConnectionData(Localhost, Port, Localhost);
+        bool ok = networkManager.StartHost();
+        networkStartInProgress = false;
+        Debug.Log(ok ? "Tiny Netcode started as Editor host on " + Localhost + ":" + Port + "." : "Tiny Netcode host failed to start.");
+        return ok;
     }
 
     private void OnClientDisconnect(ulong clientId)
     {
         if (IsEditorHost() || networkManager == null || clientId != networkManager.LocalClientId)
         {
+            Debug.Log("Tiny Netcode client disconnected: " + clientId);
             return;
         }
 
         networkManager.Shutdown();
         started = false;
+        networkStartInProgress = false;
         handlersRegistered = false;
         clientRetryTimer = 0f;
         Debug.Log("Tiny Netcode client disconnected, waiting for host...");
+    }
+
+    private void OnClientConnected(ulong clientId)
+    {
+        if (networkManager == null)
+        {
+            return;
+        }
+
+        Debug.Log(networkManager.IsServer
+            ? "Tiny Netcode client connected to host: " + clientId + " (" + networkManager.ConnectedClientsIds.Count + " connected)"
+            : "Tiny Netcode connected to host as client " + clientId + ".");
+    }
+
+#if TINY_HAS_RELAY
+    private static async Task EnsureUnityServicesSignedInAsync()
+    {
+        if (UnityServices.State == ServicesInitializationState.Uninitialized)
+        {
+            await UnityServices.InitializeAsync();
+        }
+
+        if (!AuthenticationService.Instance.IsSignedIn)
+        {
+            await AuthenticationService.Instance.SignInAnonymouslyAsync();
+        }
+    }
+#endif
+
+    private static string GetRelayJoinCode()
+    {
+        string fromArgs = GetCommandLineValue("-join");
+        if (string.IsNullOrWhiteSpace(fromArgs))
+        {
+            fromArgs = GetCommandLineValue("--join");
+        }
+
+        if (string.IsNullOrWhiteSpace(fromArgs))
+        {
+            fromArgs = GetCommandLineValue("-relay");
+        }
+
+        if (!string.IsNullOrWhiteSpace(fromArgs))
+        {
+            return fromArgs.Trim().ToUpperInvariant();
+        }
+
+        foreach (string path in GetRelayJoinCodePaths())
+        {
+            if (!File.Exists(path))
+            {
+                continue;
+            }
+
+            try
+            {
+                string code = File.ReadAllText(path);
+                if (!string.IsNullOrWhiteSpace(code))
+                {
+                    Debug.Log("Tiny Relay join code loaded from " + path + ": " + code.Trim().ToUpperInvariant());
+                    return code.Trim().ToUpperInvariant();
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogWarning("Tiny Relay could not read join code file: " + exception.Message);
+            }
+        }
+
+        return null;
+    }
+
+    private static string GetCommandLineValue(string key)
+    {
+        string[] args = Environment.GetCommandLineArgs();
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (string.Equals(args[i], key, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                return args[i + 1];
+            }
+        }
+
+        return null;
+    }
+
+    private static string GetRelayJoinCodePath()
+    {
+        string[] paths = GetRelayJoinCodePaths();
+        return paths.Length > 0 ? paths[0] : Path.Combine(Application.persistentDataPath, RelayJoinCodeFileName);
+    }
+
+    private static string[] GetRelayJoinCodePaths()
+    {
+        List<string> paths = new List<string>();
+        string root = Directory.GetParent(Application.dataPath)?.FullName;
+        AddRelayJoinCodePath(paths, root);
+        if (!string.IsNullOrEmpty(root))
+        {
+            AddRelayJoinCodePath(paths, Directory.GetParent(root)?.FullName);
+        }
+
+        AddRelayJoinCodePath(paths, Directory.GetCurrentDirectory());
+        AddRelayJoinCodePath(paths, Application.persistentDataPath);
+        return paths.ToArray();
+    }
+
+    private static void AddRelayJoinCodePath(List<string> paths, string root)
+    {
+        if (string.IsNullOrEmpty(root))
+        {
+            return;
+        }
+
+        AddUniquePath(paths, Path.Combine(root, RelayJoinCodeFileName));
+        AddUniquePath(paths, Path.Combine(root, Path.GetFileNameWithoutExtension(RelayJoinCodeFileName)));
+    }
+
+    private static void AddUniquePath(List<string> paths, string path)
+    {
+        if (!paths.Contains(path))
+        {
+            paths.Add(path);
+        }
+    }
+
+    private static void WriteRelayJoinCode(string joinCode)
+    {
+        try
+        {
+            File.WriteAllText(GetRelayJoinCodePath(), joinCode.Trim().ToUpperInvariant());
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("Tiny Relay could not write join code file: " + exception.Message);
+        }
     }
 
     private void RegisterMessageHandlers()
@@ -370,7 +620,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private bool SendWagonPushIntent(Transform wagon, float input, Vector3 playerPosition, Quaternion playerRotation)
     {
-        if (Mathf.Abs(input) < 0.01f || !CanSendWorldIntent(wagon, out string key))
+        if (!CanSendWorldIntent(wagon, out string key))
         {
             return false;
         }
@@ -593,10 +843,63 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             case IntentPushWagon:
                 if (IsWagon(entity))
                 {
-                    InvokePushWagonFromNetwork(entity, playerPosition, input, Time.deltaTime);
-                    BroadcastAuthoritativeEntity(key, entity);
+                    activeWagonPushes[senderClientId] = new WagonPushState(
+                        key,
+                        input,
+                        playerPosition,
+                        Time.time + WagonPushInputTimeout);
                 }
                 break;
+        }
+    }
+
+    private void ProcessServerWagonPushes()
+    {
+        if (networkManager == null || !networkManager.IsServer || activeWagonPushes.Count == 0)
+        {
+            return;
+        }
+
+        List<ulong> expiredClients = null;
+        HashSet<string> movedWagons = null;
+        foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
+        {
+            if (Time.time > push.Value.ExpireTime || Mathf.Abs(push.Value.Input) < 0.01f)
+            {
+                expiredClients ??= new List<ulong>();
+                expiredClients.Add(push.Key);
+                continue;
+            }
+
+            if (!syncedEntities.TryGetValue(push.Value.WagonKey, out Transform wagon) || wagon == null || !IsWagon(wagon))
+            {
+                expiredClients ??= new List<ulong>();
+                expiredClients.Add(push.Key);
+                continue;
+            }
+
+            InvokePushWagonFromNetwork(wagon, push.Value.PlayerPosition, push.Value.Input, Time.deltaTime);
+            movedWagons ??= new HashSet<string>();
+            movedWagons.Add(push.Value.WagonKey);
+        }
+
+        if (expiredClients != null)
+        {
+            for (int i = 0; i < expiredClients.Count; i++)
+            {
+                activeWagonPushes.Remove(expiredClients[i]);
+            }
+        }
+
+        if (movedWagons != null)
+        {
+            foreach (string wagonKey in movedWagons)
+            {
+                if (syncedEntities.TryGetValue(wagonKey, out Transform wagon) && wagon != null)
+                {
+                    BroadcastAuthoritativeEntity(wagonKey, wagon);
+                }
+            }
         }
     }
 
@@ -950,6 +1253,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public EntityAuthority(ulong ownerClientId, float expireTime)
         {
             OwnerClientId = ownerClientId;
+            ExpireTime = expireTime;
+        }
+    }
+
+    private readonly struct WagonPushState
+    {
+        public readonly string WagonKey;
+        public readonly float Input;
+        public readonly Vector3 PlayerPosition;
+        public readonly float ExpireTime;
+
+        public WagonPushState(string wagonKey, float input, Vector3 playerPosition, float expireTime)
+        {
+            WagonKey = wagonKey;
+            Input = input;
+            PlayerPosition = playerPosition;
             ExpireTime = expireTime;
         }
     }
