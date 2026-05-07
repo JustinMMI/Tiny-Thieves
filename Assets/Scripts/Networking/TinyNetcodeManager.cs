@@ -125,6 +125,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         if (networkManager != null && callbacksRegistered)
         {
+            networkManager.OnClientConnectedCallback -= OnClientConnected;
             networkManager.OnClientDisconnectCallback -= OnClientDisconnect;
         }
 
@@ -183,6 +184,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         if (!callbacksRegistered)
         {
+            networkManager.OnClientConnectedCallback += OnClientConnected;
             networkManager.OnClientDisconnectCallback += OnClientDisconnect;
             callbacksRegistered = true;
         }
@@ -329,6 +331,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     {
         if (IsEditorHost() || networkManager == null || clientId != networkManager.LocalClientId)
         {
+            Debug.Log("Tiny Netcode client disconnected: " + clientId);
             return;
         }
 
@@ -338,6 +341,18 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         handlersRegistered = false;
         clientRetryTimer = 0f;
         Debug.Log("Tiny Netcode client disconnected, waiting for host...");
+    }
+
+    private void OnClientConnected(ulong clientId)
+    {
+        if (networkManager == null)
+        {
+            return;
+        }
+
+        Debug.Log(networkManager.IsServer
+            ? "Tiny Netcode client connected to host: " + clientId + " (" + networkManager.ConnectedClientsIds.Count + " connected)"
+            : "Tiny Netcode connected to host as client " + clientId + ".");
     }
 
 #if TINY_HAS_RELAY
@@ -385,6 +400,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 string code = File.ReadAllText(path);
                 if (!string.IsNullOrWhiteSpace(code))
                 {
+                    Debug.Log("Tiny Relay join code loaded from " + path + ": " + code.Trim().ToUpperInvariant());
                     return code.Trim().ToUpperInvariant();
                 }
             }
@@ -439,7 +455,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
-        string path = Path.Combine(root, RelayJoinCodeFileName);
+        AddUniquePath(paths, Path.Combine(root, RelayJoinCodeFileName));
+        AddUniquePath(paths, Path.Combine(root, Path.GetFileNameWithoutExtension(RelayJoinCodeFileName)));
+    }
+
+    private static void AddUniquePath(List<string> paths, string path)
+    {
         if (!paths.Contains(path))
         {
             paths.Add(path);
