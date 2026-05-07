@@ -26,9 +26,9 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [Header("Tiny Body")]
     [SerializeField] private float standingHeight = 0.55f;
     [SerializeField] private float crouchingHeight = 0.32f;
-    [SerializeField] private float standingEyeHeight = 0.43f;
+    [SerializeField] private float standingEyeHeight = 0.46f;
     [SerializeField] private float crouchingEyeHeight = 0.25f;
-    [SerializeField] private float cameraForwardOffset = 0.12f;
+    [SerializeField] private float cameraForwardOffset = 0.2f;
     [SerializeField] private float crouchLerpSpeed = 14f;
 
     [Header("Camera Bob")]
@@ -56,6 +56,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float heldItemIdleBobAmount = 0.006f;
     [SerializeField] private float heldItemIdleBobSpeed = 3f;
     [SerializeField] private float heldItemMotionSharpness = 14f;
+    [SerializeField] private float itemGrabHandDuration = 0.12f;
+    [SerializeField] private float itemGrabPullDuration = 0.18f;
     [SerializeField] private float itemThrowForce = 4.5f;
     [SerializeField] private float itemThrowWeightSlowdown = 0.12f;
     [SerializeField, Range(0.15f, 1f)] private float minimumCarrySpeedMultiplier = 0.35f;
@@ -87,8 +89,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private TinyItem heldItem;
     private Transform itemHoldPoint;
     private float heldItemMotionTimer;
+    private bool isGrabbingItem;
+    private Coroutine itemGrabRoutine;
     private TinyRailWagon focusedWagon;
     private TinyRailWagon pushingWagon;
+
+    public float CurrentPitch => pitch;
+    public Transform HeldItemTransform => heldItem != null ? heldItem.transform : null;
 
     private void Awake()
     {
@@ -150,6 +157,12 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         Look(1f);
+
+        if (isGrabbingItem)
+        {
+            ApplyCameraHeight(false);
+            return;
+        }
 
         if (pushingWagon != null)
         {
@@ -327,6 +340,10 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         pitch = Mathf.Clamp(pitch - mouseDelta.y * mouseSensitivity * sensitivityMultiplier, minPitch, maxPitch);
         cameraPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
+        if (raymanBody != null)
+        {
+            raymanBody.SetCameraPitch(pitch);
+        }
     }
 
     private void Move()
@@ -454,7 +471,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         ConfigureTinyBody(standingHeight);
         if (raymanBody != null)
         {
-            raymanBody.AttachHands(route.LeftHandAnchor, route.RightHandAnchor);
+            raymanBody.AttachHandsWithLocalOffsets(route.LeftHandAnchor, route.RightHandAnchor, route.LeftHandRotation, route.RightHandRotation);
         }
 
         controller.enabled = false;
@@ -588,7 +605,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     {
         controller.height = height;
         controller.radius = 0.16f;
-        controller.center = Vector3.up * (height * 0.5f);
+        Vector3 hitboxOffset = raymanBody != null ? raymanBody.HitboxLocalOffset : Vector3.zero;
+        controller.center = Vector3.up * (height * 0.5f) + hitboxOffset;
         controller.stepOffset = 0.12f;
     }
 
@@ -620,7 +638,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         TinyItem item = hit.collider.GetComponentInParent<TinyItem>();
-        if (item != null && !item.IsHeld)
+        if (item != null && !item.IsNetworkHeld)
         {
             focusedItem = item;
         }
@@ -649,18 +667,72 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void PickUpItem(TinyItem item)
     {
-        if (item == null || cameraPivot == null)
+        if (item == null || cameraPivot == null || isGrabbingItem)
         {
             return;
         }
 
+        if (itemGrabRoutine != null)
+        {
+            StopCoroutine(itemGrabRoutine);
+        }
+
+        itemGrabRoutine = StartCoroutine(GrabItemRoutine(item));
+    }
+
+    private IEnumerator GrabItemRoutine(TinyItem item)
+    {
+        isGrabbingItem = true;
+        focusedItem = null;
+        focusedWagon = null;
+        horizontalVelocity = Vector3.zero;
+        verticalVelocity = 0f;
+
         EnsureItemHoldPoint();
-        item.PickUp(itemHoldPoint);
+        item.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
+        item.GetHandRotations(transform, out Quaternion leftRotation, out Quaternion rightRotation);
+
+        float handElapsed = 0f;
+        while (handElapsed < itemGrabHandDuration)
+        {
+            handElapsed += Time.deltaTime;
+            if (raymanBody != null)
+            {
+                raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation);
+            }
+
+            yield return null;
+        }
+
+        item.GetHoldLocalPose(out Vector3 holdLocalPosition, out Quaternion holdLocalRotation);
+        Quaternion holdStartRotation = item.transform.rotation * Quaternion.Inverse(holdLocalRotation);
+        Vector3 holdStartPosition = item.transform.position - holdStartRotation * holdLocalPosition;
+        itemHoldPoint.SetPositionAndRotation(holdStartPosition, holdStartRotation);
+        item.PickUp(itemHoldPoint, true);
         heldItem = item;
         heldItemMotionTimer = 0f;
-        focusedItem = null;
+        TinyNetcodeManager.TrySendItemPickup(item.transform);
+
+        Vector3 pullStartLocalPosition = itemHoldPoint.localPosition;
+        Quaternion pullStartLocalRotation = itemHoldPoint.localRotation;
+        float pullElapsed = 0f;
+        float pullDuration = Mathf.Max(0.01f, itemGrabPullDuration);
+        while (pullElapsed < pullDuration)
+        {
+            pullElapsed += Time.deltaTime;
+            float t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(pullElapsed / pullDuration));
+            itemHoldPoint.localPosition = Vector3.Lerp(pullStartLocalPosition, heldItemLocalPosition, t);
+            itemHoldPoint.localRotation = Quaternion.Slerp(pullStartLocalRotation, Quaternion.identity, t);
+            UpdateHeldItemHands();
+            yield return null;
+        }
+
+        itemHoldPoint.localPosition = heldItemLocalPosition;
+        itemHoldPoint.localRotation = Quaternion.identity;
         UpdateHeldItemMotion(true);
         UpdateHeldItemHands();
+        isGrabbingItem = false;
+        itemGrabRoutine = null;
     }
 
     private void ReleaseHeldItem(bool throwItem)
@@ -680,10 +752,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             Vector3 throwDirection = cameraPivot != null ? cameraPivot.forward : transform.forward;
             float force = itemThrowForce / (1f + item.WeightKilograms * itemThrowWeightSlowdown);
-            item.Throw(dropPosition, dropRotation, throwDirection.normalized * force);
+            Vector3 throwVelocity = throwDirection.normalized * force;
+            TinyNetcodeManager.TrySendItemRelease(item.transform, dropPosition, dropRotation, throwVelocity);
+            item.Throw(dropPosition, dropRotation, throwVelocity);
         }
         else
         {
+            TinyNetcodeManager.TrySendItemRelease(item.transform, dropPosition, dropRotation, Vector3.zero);
             item.Drop(dropPosition, dropRotation);
         }
 
@@ -740,7 +815,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         heldItem.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
-        raymanBody.AttachHands(leftAnchor, rightAnchor);
+        heldItem.GetHandRotations(transform, out Quaternion leftRotation, out Quaternion rightRotation);
+        raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, true);
     }
 
     private void StartPushingWagon(TinyRailWagon wagon)
@@ -781,7 +857,16 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         Vector2 input = ReadMoveInput();
-        Vector3 wagonDelta = pushingWagon.PushFromPlayer(transform, input.y, Time.deltaTime);
+        Vector3 wagonDelta = Vector3.zero;
+        if (TinyNetcodeManager.IsClientOnlyActive)
+        {
+            TinyNetcodeManager.TrySendWagonPush(pushingWagon.transform, input.y, transform.position, transform.rotation);
+        }
+        else
+        {
+            wagonDelta = pushingWagon.PushFromPlayer(transform, input.y, Time.deltaTime);
+        }
+
         if (wagonDelta.sqrMagnitude > 0.000001f)
         {
             controller.Move(wagonDelta);
@@ -812,7 +897,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         pushingWagon.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
-        raymanBody.AttachHands(leftAnchor, rightAnchor, pushingWagon.GetHandRotation(transform));
+        pushingWagon.GetHandRotations(transform, out Quaternion leftRotation, out Quaternion rightRotation);
+        raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation);
     }
 
     private float GetCarrySpeedMultiplier()

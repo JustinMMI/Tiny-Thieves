@@ -1,8 +1,20 @@
+using System;
 using UnityEngine;
+using UnityEngine.Animations;
+using UnityEngine.Playables;
+using UnityEngine.Serialization;
 
 [DisallowMultipleComponent]
 public sealed class TinyRaymanBody : MonoBehaviour
 {
+    private enum PlayerSkin
+    {
+        Vert,
+        Rouge,
+        Bleu,
+        Orange
+    }
+
     [Header("Visibility")]
     [SerializeField] private bool createOnAwake = true;
     [SerializeField] private bool hideLegacyModel = true;
@@ -15,13 +27,68 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private Vector3 handSize = new Vector3(0.07f, 0.06f, 0.07f);
     [SerializeField] private Vector3 footSize = new Vector3(0.09f, 0.05f, 0.13f);
 
+    [Header("Character Model")]
+    [SerializeField] private GameObject characterModel;
+    [SerializeField] private Vector3 characterModelLocalPosition = Vector3.zero;
+    [SerializeField] private Vector3 characterModelLocalEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 characterModelLocalScale = Vector3.one;
+    [SerializeField] private bool showCharacterModelInLocalView = true;
+    [SerializeField] private bool applyCharacterModelOffsetToHitbox = true;
+
+    [Header("Character Skin")]
+    [SerializeField] private PlayerSkin selectedSkin;
+    [SerializeField] private string bodyRendererName = "Body";
+    [SerializeField] private Material greenBodyMaterial;
+    [SerializeField] private Material redBodyMaterial;
+    [SerializeField] private Material blueBodyMaterial;
+    [SerializeField] private Material orangeBodyMaterial;
+    [SerializeField] private string greenMaskName = "Mask Green";
+    [SerializeField] private string redMaskName = "Mask Red";
+    [SerializeField] private string blueMaskName = "Mask Blue";
+    [SerializeField] private string orangeMaskName = "Mask Orange";
+    [SerializeField] private string whiteMaskName = "Mask White";
+
+    [Header("Head Look")]
+    [SerializeField] private bool driveHeadLookWithCamera = true;
+    [SerializeField] private string headLookTransformName = "Head";
+    [SerializeField] private float headLookPitchInfluence = 0.65f;
+    [SerializeField] private float headLookMinPitch = -35f;
+    [SerializeField] private float headLookMaxPitch = 45f;
+    [SerializeField] private float headLookSharpness = 18f;
+
+    [Header("Character Animation")]
+    [SerializeField] private bool driveWalkAnimation = true;
+    [SerializeField] private AnimationClip walkAnimationClip;
+    [SerializeField] private RuntimeAnimatorController animatorController;
+    [SerializeField] private string animatorWalkingBool = "IsWalking";
+    [SerializeField] private string walkAnimationStateName = "walk";
+    [SerializeField] private float walkAnimationSpeed = 1f;
+    [SerializeField] private float walkStopAnimationSpeed = 1f;
+    [SerializeField] private float walkAnimationReferenceSpeed = 1.65f;
+    [SerializeField, Range(0f, 1f)] private float walkLoopStartNormalized = 0.22f;
+    [SerializeField, Range(0f, 1f)] private float walkLoopEndNormalized = 0.78f;
+    [SerializeField, Range(0f, 1f)] private float walkStopStartNormalized = 0.78f;
+    [SerializeField] private float walkAnimationMoveThreshold = 0.05f;
+
+    [Header("Hand Models")]
+    [SerializeField] private GameObject leftHandModel;
+    [SerializeField] private GameObject rightHandModel;
+    [SerializeField] private Vector3 leftHandModelLocalPosition = Vector3.zero;
+    [SerializeField] private Vector3 leftHandModelLocalEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 leftHandModelLocalScale = Vector3.one;
+    [SerializeField] private Vector3 rightHandModelLocalPosition = Vector3.zero;
+    [SerializeField] private Vector3 rightHandModelLocalEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 rightHandModelLocalScale = Vector3.one;
+
     [Header("Motion")]
     [SerializeField] private float followSharpness = 18f;
     [SerializeField] private float limbBobAmount = 0.035f;
     [SerializeField] private float limbSwingAmount = 0.055f;
     [SerializeField] private float handGripSharpness = 22f;
     [SerializeField] private float handGripLift = 0.02f;
-    [SerializeField] private Vector3 attachedHandWorldEulerAngles = Vector3.zero;
+    [FormerlySerializedAs("attachedHandWorldEulerAngles")]
+    [SerializeField] private Vector3 attachedLeftHandWorldEulerAngles = Vector3.zero;
+    [SerializeField] private Vector3 attachedRightHandWorldEulerAngles = Vector3.zero;
 
     [Header("Colors")]
     [SerializeField] private Color torsoColor = new Color(0.15f, 0.42f, 1f, 1f);
@@ -36,17 +103,36 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private Transform rig;
     private Transform torso;
     private Transform head;
+    private Transform characterModelRoot;
     private Transform leftHand;
     private Transform rightHand;
     private Transform leftFoot;
     private Transform rightFoot;
+    private Animator characterAnimator;
     private CharacterController controller;
     private Vector3 previousPosition;
     private float moveCycle;
     private bool handsAttached;
     private Vector3 leftHandAnchor;
     private Vector3 rightHandAnchor;
-    private Quaternion attachedHandRotation;
+    private Quaternion attachedLeftHandRotation;
+    private Quaternion attachedRightHandRotation;
+    private bool attachedHandsSnap;
+    private const string CustomModelName = "__Custom_Model";
+    private const string CharacterModelName = "Character Model";
+    private float walkAnimationTime = 1f;
+    private bool wasWalking;
+    private bool wasWalkingBackward;
+    private PlayableGraph walkGraph;
+    private AnimationClipPlayable walkPlayable;
+    private Transform headLookTransform;
+    private Quaternion headLookBaseLocalRotation = Quaternion.identity;
+    private float targetHeadLookPitch;
+    private float currentHeadLookPitch;
+
+    public Vector3 HitboxLocalOffset => applyCharacterModelOffsetToHitbox && characterModel != null
+        ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
+        : Vector3.zero;
 
     private void Awake()
     {
@@ -64,6 +150,24 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
     }
 
+    private void OnValidate()
+    {
+        if (Application.isPlaying && rig != null)
+        {
+            EnsureBody();
+        }
+    }
+
+    private void OnDisable()
+    {
+        DestroyWalkGraph();
+    }
+
+    private void OnDestroy()
+    {
+        DestroyWalkGraph();
+    }
+
     private void LateUpdate()
     {
         if (rig == null)
@@ -76,31 +180,122 @@ public sealed class TinyRaymanBody : MonoBehaviour
         previousPosition = transform.position;
 
         Vector3 flatVelocity = Vector3.ProjectOnPlane(velocity, Vector3.up);
-        float speed01 = Mathf.Clamp01(flatVelocity.magnitude / 2.2f);
+        float flatSpeed = flatVelocity.magnitude;
+        float speed01 = Mathf.Clamp01(flatSpeed / 2.2f);
         moveCycle += speed01 * deltaTime * 9f;
+        float forwardAmount = flatVelocity.sqrMagnitude > 0.0001f
+            ? Vector3.Dot(flatVelocity.normalized, transform.forward)
+            : 0f;
+
+        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, deltaTime);
 
         float follow = 1f - Mathf.Exp(-followSharpness * deltaTime);
         UpdateCoreParts(speed01, follow);
         UpdateHands(speed01, follow, deltaTime);
         UpdateFeet(speed01, follow);
+        UpdateHeadLook(deltaTime);
+    }
+
+    public void SetCameraPitch(float cameraPitch)
+    {
+        targetHeadLookPitch = Mathf.Clamp(cameraPitch * headLookPitchInfluence, headLookMinPitch, headLookMaxPitch);
+    }
+
+    public void SetSkin(int skinIndex)
+    {
+        selectedSkin = (PlayerSkin)Mathf.Clamp(skinIndex, 0, Enum.GetValues(typeof(PlayerSkin)).Length - 1);
+        ApplyCharacterSkin();
+    }
+
+    public bool TryGetHandPoses(
+        out Vector3 leftPosition,
+        out Quaternion leftRotation,
+        out Vector3 rightPosition,
+        out Quaternion rightRotation)
+    {
+        if (leftHand == null || rightHand == null)
+        {
+            leftPosition = Vector3.zero;
+            leftRotation = Quaternion.identity;
+            rightPosition = Vector3.zero;
+            rightRotation = Quaternion.identity;
+            return false;
+        }
+
+        leftPosition = leftHand.position;
+        leftRotation = leftHand.rotation;
+        rightPosition = rightHand.position;
+        rightRotation = rightHand.rotation;
+        return true;
+    }
+
+    public void ApplyRemoteHandPoses(
+        Vector3 leftPosition,
+        Quaternion leftRotation,
+        Vector3 rightPosition,
+        Quaternion rightRotation,
+        bool snap)
+    {
+        AttachHands(leftPosition - Vector3.up * handGripLift, rightPosition - Vector3.up * handGripLift, leftRotation, rightRotation, snap);
+    }
+
+    public void ApplyRemoteHandAnchors(
+        Vector3 leftAnchor,
+        Quaternion leftRotation,
+        Vector3 rightAnchor,
+        Quaternion rightRotation,
+        bool snap)
+    {
+        AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, snap);
     }
 
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
     {
-        AttachHands(leftAnchor, rightAnchor, Quaternion.Euler(attachedHandWorldEulerAngles));
+        AttachHands(
+            leftAnchor,
+            rightAnchor,
+            Quaternion.Euler(attachedLeftHandWorldEulerAngles),
+            Quaternion.Euler(attachedRightHandWorldEulerAngles));
     }
 
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor, Quaternion worldRotation)
     {
+        AttachHands(leftAnchor, rightAnchor, worldRotation, worldRotation);
+    }
+
+    public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor, Quaternion leftWorldRotation, Quaternion rightWorldRotation)
+    {
+        AttachHands(leftAnchor, rightAnchor, leftWorldRotation, rightWorldRotation, false);
+    }
+
+    public void AttachHandsWithLocalOffsets(Vector3 leftAnchor, Vector3 rightAnchor, Quaternion leftBaseRotation, Quaternion rightBaseRotation)
+    {
+        AttachHands(
+            leftAnchor,
+            rightAnchor,
+            leftBaseRotation * Quaternion.Euler(attachedLeftHandWorldEulerAngles),
+            rightBaseRotation * Quaternion.Euler(attachedRightHandWorldEulerAngles));
+    }
+
+    public void AttachHands(
+        Vector3 leftAnchor,
+        Vector3 rightAnchor,
+        Quaternion leftWorldRotation,
+        Quaternion rightWorldRotation,
+        bool snap)
+    {
         handsAttached = true;
         leftHandAnchor = leftAnchor + Vector3.up * handGripLift;
         rightHandAnchor = rightAnchor + Vector3.up * handGripLift;
-        attachedHandRotation = worldRotation;
+        attachedLeftHandRotation = leftWorldRotation;
+        attachedRightHandRotation = rightWorldRotation;
+        attachedHandsSnap = snap;
     }
 
     public void ReleaseHands()
     {
         handsAttached = false;
+        attachedHandsSnap = false;
     }
 
     private void EnsureBody()
@@ -114,19 +309,30 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         torso = EnsurePart("Torso", torsoSize, torsoColor);
         head = EnsurePart("Head", headSize, headColor);
-        leftHand = EnsurePart("Left Hand", handSize, leftHandColor);
-        rightHand = EnsurePart("Right Hand", handSize, rightHandColor);
+        characterModelRoot = EnsureCharacterModel();
+        leftHand = EnsurePart("Left Hand", handSize, leftHandColor, leftHandModel, leftHandModelLocalPosition, leftHandModelLocalEulerAngles, leftHandModelLocalScale);
+        rightHand = EnsurePart("Right Hand", handSize, rightHandColor, rightHandModel, rightHandModelLocalPosition, rightHandModelLocalEulerAngles, rightHandModelLocalScale);
         leftFoot = EnsurePart("Left Foot", footSize, leftFootColor);
         rightFoot = EnsurePart("Right Foot", footSize, rightFootColor);
         ApplyLocalVisibility();
+        ApplyCharacterSkin();
     }
 
-    private Transform EnsurePart(string partName, Vector3 size, Color color)
+    private Transform EnsurePart(
+        string partName,
+        Vector3 size,
+        Color color,
+        GameObject modelPrefab = null,
+        Vector3 modelLocalPosition = default(Vector3),
+        Vector3 modelLocalEulerAngles = default(Vector3),
+        Vector3 modelLocalScale = default(Vector3))
     {
         Transform part = rig.Find(partName);
         if (part == null)
         {
-            GameObject partObject = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            GameObject partObject = modelPrefab == null
+                ? GameObject.CreatePrimitive(PrimitiveType.Cube)
+                : new GameObject(partName);
             partObject.name = partName;
             part = partObject.transform;
             part.SetParent(rig, false);
@@ -138,25 +344,266 @@ public sealed class TinyRaymanBody : MonoBehaviour
             }
         }
 
-        part.localScale = size;
+        part.localScale = modelPrefab == null ? size : Vector3.one;
 
-        Renderer renderer = part.GetComponent<Renderer>();
-        if (renderer != null)
+        if (modelPrefab == null)
         {
-            renderer.sharedMaterial = CreateMaterial(partName, color);
+            EnsureFallbackVisual(part, partName, color);
+            RemoveCustomModel(part);
+        }
+        else
+        {
+            RemoveFallbackVisual(part);
+            EnsureCustomModel(part, modelPrefab, modelLocalPosition, modelLocalEulerAngles, modelLocalScale == default(Vector3) ? Vector3.one : modelLocalScale);
         }
 
         return part;
     }
 
+    private Transform EnsureCharacterModel()
+    {
+        Transform modelRoot = rig.Find(CharacterModelName);
+        if (characterModel == null)
+        {
+            if (modelRoot != null)
+            {
+                DestroyGameObject(modelRoot.gameObject);
+            }
+
+            return null;
+        }
+
+        if (modelRoot == null)
+        {
+            modelRoot = new GameObject(CharacterModelName).transform;
+            modelRoot.SetParent(rig, false);
+        }
+
+        modelRoot.localPosition = characterModelLocalPosition;
+        modelRoot.localRotation = Quaternion.Euler(characterModelLocalEulerAngles);
+        modelRoot.localScale = characterModelLocalScale;
+        EnsureCustomModel(modelRoot, characterModel, Vector3.zero, Vector3.zero, Vector3.one);
+        ConfigureCharacterRenderers(modelRoot);
+        ApplyCharacterSkin();
+        ResolveHeadLookTransform();
+        characterAnimator = modelRoot.GetComponentInChildren<Animator>(true);
+        if (characterAnimator == null)
+        {
+            characterAnimator = modelRoot.gameObject.AddComponent<Animator>();
+        }
+
+        if (characterAnimator != null)
+        {
+            characterAnimator.applyRootMotion = false;
+            characterAnimator.cullingMode = AnimatorCullingMode.AlwaysAnimate;
+            characterAnimator.speed = 1f;
+            if (animatorController != null)
+            {
+                characterAnimator.runtimeAnimatorController = animatorController;
+            }
+        }
+
+        SetupWalkPlayable();
+        characterAnimator.Update(0f);
+        return modelRoot;
+    }
+
+    private static void ConfigureCharacterRenderers(Transform modelRoot)
+    {
+        if (modelRoot == null)
+        {
+            return;
+        }
+
+        SkinnedMeshRenderer[] skinnedRenderers = modelRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+        for (int i = 0; i < skinnedRenderers.Length; i++)
+        {
+            skinnedRenderers[i].updateWhenOffscreen = true;
+        }
+    }
+
+    private void ApplyCharacterSkin()
+    {
+        Transform modelInstance = characterModelRoot != null ? characterModelRoot.Find(CustomModelName) : null;
+        Transform skinRoot = modelInstance != null ? modelInstance : characterModelRoot;
+        if (skinRoot == null)
+        {
+            return;
+        }
+
+        Material bodyMaterial = GetSelectedBodyMaterial();
+        if (bodyMaterial != null)
+        {
+            Renderer[] bodyRenderers = FindRenderersByName(skinRoot, bodyRendererName);
+            for (int i = 0; i < bodyRenderers.Length; i++)
+            {
+                ApplyMaterialToRenderer(bodyRenderers[i], bodyMaterial);
+            }
+        }
+
+        SetMaskVisible(skinRoot, whiteMaskName, false);
+        SetMaskVisible(skinRoot, greenMaskName, selectedSkin == PlayerSkin.Vert);
+        SetMaskVisible(skinRoot, redMaskName, selectedSkin == PlayerSkin.Rouge);
+        SetMaskVisible(skinRoot, blueMaskName, selectedSkin == PlayerSkin.Bleu);
+        SetMaskVisible(skinRoot, orangeMaskName, selectedSkin == PlayerSkin.Orange);
+    }
+
+    private Material GetSelectedBodyMaterial()
+    {
+        switch (selectedSkin)
+        {
+            case PlayerSkin.Rouge:
+                return redBodyMaterial;
+            case PlayerSkin.Bleu:
+                return blueBodyMaterial;
+            case PlayerSkin.Orange:
+                return orangeBodyMaterial;
+            default:
+                return greenBodyMaterial;
+        }
+    }
+
+    private static void SetMaskVisible(Transform root, string maskName, bool visible)
+    {
+        Transform mask = FindTransformByName(root, maskName);
+        if (mask != null)
+        {
+            mask.gameObject.SetActive(visible);
+        }
+    }
+
+    private static Renderer[] FindRenderersByName(Transform root, string rendererName)
+    {
+        Transform rendererTransform = FindTransformByName(root, rendererName);
+        if (rendererTransform == null)
+        {
+            return Array.Empty<Renderer>();
+        }
+
+        return rendererTransform.GetComponentsInChildren<Renderer>(true);
+    }
+
+    private static void ApplyMaterialToRenderer(Renderer renderer, Material material)
+    {
+        if (renderer == null || material == null)
+        {
+            return;
+        }
+
+        Material[] materials = renderer.sharedMaterials;
+        if (materials.Length == 0)
+        {
+            renderer.sharedMaterial = material;
+            return;
+        }
+
+        for (int i = 0; i < materials.Length; i++)
+        {
+            materials[i] = material;
+        }
+
+        renderer.sharedMaterials = materials;
+    }
+
+    private void ResolveHeadLookTransform()
+    {
+        headLookTransform = null;
+        if (characterModelRoot != null)
+        {
+            headLookTransform = FindTransformByName(characterModelRoot, headLookTransformName);
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, "head");
+            }
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, "tete");
+            }
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, "neck");
+            }
+        }
+        else
+        {
+            headLookTransform = head;
+        }
+
+        headLookBaseLocalRotation = headLookTransform != null
+            ? headLookTransform.localRotation
+            : Quaternion.identity;
+        currentHeadLookPitch = targetHeadLookPitch;
+    }
+
+    private void EnsureFallbackVisual(Transform part, string partName, Color color)
+    {
+        if (part.GetComponent<MeshFilter>() == null)
+        {
+            MeshFilter meshFilter = part.gameObject.AddComponent<MeshFilter>();
+            meshFilter.sharedMesh = CreateCubeMesh();
+        }
+
+        Renderer renderer = part.GetComponent<Renderer>();
+        if (renderer == null)
+        {
+            renderer = part.gameObject.AddComponent<MeshRenderer>();
+        }
+
+        renderer.sharedMaterial = CreateMaterial(partName, color);
+    }
+
+    private void RemoveFallbackVisual(Transform part)
+    {
+        MeshRenderer meshRenderer = part.GetComponent<MeshRenderer>();
+        MeshFilter meshFilter = part.GetComponent<MeshFilter>();
+
+        DestroyComponent(meshRenderer);
+        DestroyComponent(meshFilter);
+
+        Collider collider = part.GetComponent<Collider>();
+        DestroyComponent(collider);
+    }
+
+    private void EnsureCustomModel(Transform part, GameObject modelPrefab, Vector3 localPosition, Vector3 localEulerAngles, Vector3 localScale)
+    {
+        Transform customModel = part.Find(CustomModelName);
+        if (customModel == null)
+        {
+            GameObject instance = Instantiate(modelPrefab, part);
+            instance.name = CustomModelName;
+            customModel = instance.transform;
+        }
+
+        customModel.localPosition = localPosition;
+        customModel.localRotation = Quaternion.Euler(localEulerAngles);
+        customModel.localScale = localScale;
+
+        Collider[] colliders = customModel.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            colliders[i].enabled = false;
+        }
+    }
+
+    private void RemoveCustomModel(Transform part)
+    {
+        Transform customModel = part.Find(CustomModelName);
+        if (customModel != null)
+        {
+            DestroyGameObject(customModel.gameObject);
+        }
+    }
+
     private void ApplyLocalVisibility()
     {
-        SetPartVisible(torso, showTorsoInLocalView);
-        SetPartVisible(head, showHeadInLocalView);
+        bool usesCharacterModel = characterModelRoot != null;
+        SetPartVisible(characterModelRoot, usesCharacterModel && showCharacterModelInLocalView);
+        SetPartVisible(torso, !usesCharacterModel && showTorsoInLocalView);
+        SetPartVisible(head, !usesCharacterModel && showHeadInLocalView);
         SetPartVisible(leftHand, true);
         SetPartVisible(rightHand, true);
-        SetPartVisible(leftFoot, true);
-        SetPartVisible(rightFoot, true);
+        SetPartVisible(leftFoot, !usesCharacterModel);
+        SetPartVisible(rightFoot, !usesCharacterModel);
     }
 
     private static void SetPartVisible(Transform part, bool visible)
@@ -166,30 +613,140 @@ public sealed class TinyRaymanBody : MonoBehaviour
             return;
         }
 
-        Renderer renderer = part.GetComponent<Renderer>();
-        if (renderer != null)
+        Renderer[] renderers = part.GetComponentsInChildren<Renderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
         {
-            renderer.enabled = visible;
+            renderers[i].enabled = visible;
         }
     }
 
     private void UpdateCoreParts(float speed01, float follow)
     {
+        if (characterModelRoot != null)
+        {
+            return;
+        }
+
         float bodyBob = Mathf.Sin(moveCycle * 2f) * 0.01f * speed01;
 
         MoveLocal(torso, new Vector3(0f, 0.22f + bodyBob, 0.04f), follow);
         MoveLocal(head, new Vector3(0f, 0.36f + bodyBob * 0.5f, 0.08f), follow);
     }
 
+    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float deltaTime)
+    {
+        if (!driveWalkAnimation || characterAnimator == null)
+        {
+            return;
+        }
+
+        bool isWalking = speed01 > walkAnimationMoveThreshold;
+        bool isWalkingBackward = isWalking && forwardAmount < -0.2f;
+        float loopStart = Mathf.Clamp01(walkLoopStartNormalized);
+        float loopEnd = Mathf.Clamp(walkLoopEndNormalized, loopStart + 0.01f, 1f);
+        float stopStart = Mathf.Clamp(walkStopStartNormalized, loopStart, 1f);
+        float speedMultiplier = Mathf.Max(0.05f, flatSpeed / Mathf.Max(0.01f, walkAnimationReferenceSpeed));
+        float loopBaseTimeStep = deltaTime * Mathf.Max(0.01f, walkAnimationSpeed);
+        float loopTimeStep = loopBaseTimeStep * speedMultiplier;
+        float stopTimeStep = deltaTime * Mathf.Max(0.01f, walkStopAnimationSpeed);
+
+        if (isWalking)
+        {
+            if (!wasWalking || wasWalkingBackward != isWalkingBackward)
+            {
+                walkAnimationTime = isWalkingBackward ? loopEnd : 0f;
+            }
+
+            if (isWalkingBackward)
+            {
+                walkAnimationTime -= loopTimeStep;
+                if (walkAnimationTime <= loopStart)
+                {
+                    float loopLength = Mathf.Max(0.01f, loopEnd - loopStart);
+                    walkAnimationTime = loopEnd - Mathf.Repeat(loopStart - walkAnimationTime, loopLength);
+                }
+            }
+            else
+            {
+                walkAnimationTime += loopTimeStep;
+                if (walkAnimationTime >= loopEnd)
+                {
+                    float loopLength = Mathf.Max(0.01f, loopEnd - loopStart);
+                    walkAnimationTime = loopStart + Mathf.Repeat(walkAnimationTime - loopStart, loopLength);
+                }
+            }
+        }
+        else if (wasWalking)
+        {
+            walkAnimationTime = stopStart;
+        }
+        else if (walkAnimationTime < 1f)
+        {
+            walkAnimationTime = Mathf.Min(1f, walkAnimationTime + stopTimeStep);
+        }
+
+        wasWalking = isWalking;
+        wasWalkingBackward = isWalkingBackward;
+        if (animatorController != null && !string.IsNullOrEmpty(walkAnimationStateName))
+        {
+            characterAnimator.SetBool(animatorWalkingBool, isWalking);
+            characterAnimator.Play(walkAnimationStateName, 0, walkAnimationTime);
+            characterAnimator.Update(0f);
+            return;
+        }
+
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid() || walkAnimationClip == null)
+        {
+            return;
+        }
+
+        walkPlayable.SetTime(Mathf.Clamp01(walkAnimationTime) * walkAnimationClip.length);
+        walkGraph.Evaluate(0f);
+    }
+
+    private void SetupWalkPlayable()
+    {
+        DestroyWalkGraph();
+        if (walkAnimationClip == null || characterAnimator == null || animatorController != null)
+        {
+            return;
+        }
+
+        walkGraph = PlayableGraph.Create("Tiny Character Walk");
+        walkGraph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
+        walkPlayable = AnimationClipPlayable.Create(walkGraph, walkAnimationClip);
+        walkPlayable.SetApplyFootIK(false);
+        walkPlayable.SetSpeed(0f);
+
+        AnimationPlayableOutput output = AnimationPlayableOutput.Create(walkGraph, "Walk", characterAnimator);
+        output.SetSourcePlayable(walkPlayable);
+        walkGraph.Play();
+    }
+
+    private void DestroyWalkGraph()
+    {
+        if (walkGraph.IsValid())
+        {
+            walkGraph.Destroy();
+        }
+    }
+
     private void UpdateHands(float speed01, float follow, float deltaTime)
     {
         if (handsAttached)
         {
+            if (attachedHandsSnap)
+            {
+                SetWorld(leftHand, leftHandAnchor, attachedLeftHandRotation);
+                SetWorld(rightHand, rightHandAnchor, attachedRightHandRotation);
+                return;
+            }
+
             float gripFollow = 1f - Mathf.Exp(-handGripSharpness * deltaTime);
             MoveWorld(leftHand, leftHandAnchor, gripFollow);
             MoveWorld(rightHand, rightHandAnchor, gripFollow);
-            RotateWorld(leftHand, attachedHandRotation, gripFollow);
-            RotateWorld(rightHand, attachedHandRotation, gripFollow);
+            RotateWorld(leftHand, attachedLeftHandRotation, gripFollow);
+            RotateWorld(rightHand, attachedRightHandRotation, gripFollow);
             return;
         }
 
@@ -201,12 +758,38 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     private void UpdateFeet(float speed01, float follow)
     {
+        if (characterModelRoot != null)
+        {
+            return;
+        }
+
         float leftPhase = Mathf.Sin(moveCycle + Mathf.PI);
         float rightPhase = Mathf.Sin(moveCycle);
         float footY = controller != null ? Mathf.Max(0.035f, controller.radius * 0.2f) : 0.035f;
 
         MoveLocal(leftFoot, new Vector3(-0.08f, footY + Mathf.Max(0f, leftPhase) * limbBobAmount * speed01, 0.04f + leftPhase * limbSwingAmount * speed01), follow);
         MoveLocal(rightFoot, new Vector3(0.08f, footY + Mathf.Max(0f, rightPhase) * limbBobAmount * speed01, 0.04f + rightPhase * limbSwingAmount * speed01), follow);
+    }
+
+    private void UpdateHeadLook(float deltaTime)
+    {
+        if (!driveHeadLookWithCamera)
+        {
+            return;
+        }
+
+        if (headLookTransform == null)
+        {
+            ResolveHeadLookTransform();
+            if (headLookTransform == null)
+            {
+                return;
+            }
+        }
+
+        float follow = 1f - Mathf.Exp(-headLookSharpness * deltaTime);
+        currentHeadLookPitch = Mathf.Lerp(currentHeadLookPitch, targetHeadLookPitch, follow);
+        headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(currentHeadLookPitch, 0f, 0f);
     }
 
     private static void MoveLocal(Transform target, Vector3 localPosition, float follow)
@@ -240,6 +823,41 @@ public sealed class TinyRaymanBody : MonoBehaviour
         target.rotation = Quaternion.Slerp(target.rotation, worldRotation, follow);
     }
 
+    private static Transform FindTransformByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (root.name.Equals(name, StringComparison.OrdinalIgnoreCase)
+            || root.name.IndexOf(name, StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindTransformByName(root.GetChild(i), name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static void SetWorld(Transform target, Vector3 worldPosition, Quaternion worldRotation)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        target.SetPositionAndRotation(worldPosition, worldRotation);
+    }
+
     private static Material CreateMaterial(string name, Color color)
     {
         Shader shader = Shader.Find("Universal Render Pipeline/Lit");
@@ -257,6 +875,48 @@ public sealed class TinyRaymanBody : MonoBehaviour
         material.name = "Rayman " + name;
         material.color = color;
         return material;
+    }
+
+    private static Mesh CreateCubeMesh()
+    {
+        GameObject cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+        Mesh mesh = cube.GetComponent<MeshFilter>().sharedMesh;
+        DestroyGameObject(cube);
+        return mesh;
+    }
+
+    private static void DestroyComponent(Component component)
+    {
+        if (component == null)
+        {
+            return;
+        }
+
+        if (Application.isPlaying)
+        {
+            Destroy(component);
+        }
+        else
+        {
+            DestroyImmediate(component);
+        }
+    }
+
+    private static void DestroyGameObject(GameObject target)
+    {
+        if (target == null)
+        {
+            return;
+        }
+
+        if (Application.isPlaying)
+        {
+            Destroy(target);
+        }
+        else
+        {
+            DestroyImmediate(target);
+        }
     }
 
     private void HideLegacyPlayerModel()
