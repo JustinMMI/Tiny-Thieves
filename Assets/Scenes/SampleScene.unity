@@ -1407,6 +1407,7 @@ MonoBehaviour:
   standingEyeHeight: 0.46
   crouchingEyeHeight: 0.25
   cameraForwardOffset: 0.2
+  manualHitboxCenterOffset: {x: 1.67, y: 0, z: 0}
   crouchLerpSpeed: 14
   walkBobSpeed: 14
   sprintBobSpeed: 19
@@ -1491,10 +1492,15 @@ MonoBehaviour:
   headLookMaxPitch: 45
   headLookSharpness: 18
   driveWalkAnimation: 1
+  idleAnimationClip: {fileID: 7400000, guid: 7f528bdb85cd17f42a7fdda04c14b42f, type: 2}
   walkAnimationClip: {fileID: 7400000, guid: 5e4e375b056790243a2beb703ab0334b, type: 2}
+  strafeWalkAnimationClip: {fileID: 7400000, guid: ae4aba49df39b5e4c8cd5396ebb02f3c, type: 2}
   animatorController: {fileID: 9100000, guid: b777d9413bf17a749b7f4d62781e3cd8, type: 2}
   animatorWalkingBool: IsWalking
+  idleAnimationStateName: Idle
   walkAnimationStateName: Walk
+  strafeWalkAnimationStateName: StraffWalk
+  idleAnimationSpeed: 0.15
   walkAnimationSpeed: 0.15
   walkStopAnimationSpeed: 1
   walkAnimationReferenceSpeed: 1.65
@@ -9501,6 +9507,67 @@ Transform:
   m_CorrespondingSourceObject: {fileID: 400000001, guid: b8ee052e6b2dfcb4cad43e5c5c6a155b, type: 3}
   m_PrefabInstance: {fileID: 1761474051}
   m_PrefabAsset: {fileID: 0}
+--- !u!1001 &1804716393
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 61.719063
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 1.0241708
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 5.9962773
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -8679921383154817045, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 919132149155446097, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: m_Name
+      value: Zone Shop
+      objectReference: {fileID: 0}
+    - target: {fileID: 1738776581880846596, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
+      propertyPath: 'm_Materials.Array.data[0]'
+      value: 
+      objectReference: {fileID: 2100000, guid: 5bde1f4d33277254c803014ef943ae83, type: 2}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 7b826cea643d2964f91936c4028005c7, type: 3}
 --- !u!1 &1814663674
 GameObject:
   m_ObjectHideFlags: 0
@@ -10911,3 +10978,4 @@ SceneRoots:
   - {fileID: 770226054}
   - {fileID: 823114582}
   - {fileID: 50332785}
+  - {fileID: 1804716393}

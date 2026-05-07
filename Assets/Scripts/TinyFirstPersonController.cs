@@ -29,6 +29,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float standingEyeHeight = 0.46f;
     [SerializeField] private float crouchingEyeHeight = 0.25f;
     [SerializeField] private float cameraForwardOffset = 0.2f;
+    [SerializeField] private Vector3 manualHitboxCenterOffset = Vector3.zero;
     [SerializeField] private float crouchLerpSpeed = 14f;
 
     [Header("Camera Bob")]
@@ -137,6 +138,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             return;
         }
+
+        RefreshHitboxOffset();
 
         if (Keyboard.current.escapeKey.wasPressedThisFrame)
         {
@@ -605,9 +608,24 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     {
         controller.height = height;
         controller.radius = 0.16f;
-        Vector3 hitboxOffset = raymanBody != null ? raymanBody.HitboxLocalOffset : Vector3.zero;
-        controller.center = Vector3.up * (height * 0.5f) + hitboxOffset;
+        RefreshHitboxOffset(height);
         controller.stepOffset = 0.12f;
+    }
+
+    private void RefreshHitboxOffset()
+    {
+        RefreshHitboxOffset(controller != null ? controller.height : standingHeight);
+    }
+
+    private void RefreshHitboxOffset(float height)
+    {
+        if (controller == null)
+        {
+            return;
+        }
+
+        Vector3 hitboxOffset = (raymanBody != null ? raymanBody.HitboxLocalOffset : Vector3.zero) + manualHitboxCenterOffset;
+        controller.center = Vector3.up * (height * 0.5f) + hitboxOffset;
     }
 
     private void ApplyCameraHeight(bool snap)
@@ -821,7 +839,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void StartPushingWagon(TinyRailWagon wagon)
     {
-        if (wagon == null || heldItem != null)
+        if (wagon == null || heldItem != null || !TinyNetcodeManager.CanUseWagonSide(wagon.transform, transform))
         {
             return;
         }
@@ -830,11 +848,26 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         focusedWagon = null;
         horizontalVelocity = Vector3.zero;
         verticalVelocity = 0f;
+        if (TinyNetcodeManager.IsNetworkActive)
+        {
+            if (!TinyNetcodeManager.TrySendWagonGrab(pushingWagon.transform, transform.position, transform.rotation))
+            {
+                pushingWagon = null;
+                return;
+            }
+        }
+
         AttachHandsToWagon();
     }
 
     private void StopPushingWagon()
     {
+        TinyRailWagon releasedWagon = pushingWagon;
+        if (releasedWagon != null && TinyNetcodeManager.IsNetworkActive)
+        {
+            TinyNetcodeManager.TrySendWagonRelease(releasedWagon.transform, transform.position, transform.rotation);
+        }
+
         pushingWagon = null;
         if (raymanBody != null)
         {
@@ -852,18 +885,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         if ((Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
             || (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame))
         {
-            if (TinyNetcodeManager.IsClientOnlyActive)
-            {
-                TinyNetcodeManager.TrySendWagonPush(pushingWagon.transform, 0f, transform.position, transform.rotation);
-            }
-
             StopPushingWagon();
             return;
         }
 
         Vector2 input = ReadMoveInput();
         Vector3 wagonDelta = Vector3.zero;
-        if (TinyNetcodeManager.IsClientOnlyActive)
+        if (TinyNetcodeManager.IsNetworkActive)
         {
             TinyNetcodeManager.TrySendWagonPush(pushingWagon.transform, input.y, transform.position, transform.rotation);
         }

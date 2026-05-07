@@ -7,6 +7,12 @@ using UnityEngine.Serialization;
 [DisallowMultipleComponent]
 public sealed class TinyRaymanBody : MonoBehaviour
 {
+    private enum MoveAnimationKind
+    {
+        Walk,
+        Strafe
+    }
+
     private enum PlayerSkin
     {
         Vert,
@@ -58,10 +64,15 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     [Header("Character Animation")]
     [SerializeField] private bool driveWalkAnimation = true;
+    [SerializeField] private AnimationClip idleAnimationClip;
     [SerializeField] private AnimationClip walkAnimationClip;
+    [SerializeField] private AnimationClip strafeWalkAnimationClip;
     [SerializeField] private RuntimeAnimatorController animatorController;
     [SerializeField] private string animatorWalkingBool = "IsWalking";
+    [SerializeField] private string idleAnimationStateName = "Idle";
     [SerializeField] private string walkAnimationStateName = "walk";
+    [SerializeField] private string strafeWalkAnimationStateName = "StraffWalk";
+    [SerializeField] private float idleAnimationSpeed = 1f;
     [SerializeField] private float walkAnimationSpeed = 1f;
     [SerializeField] private float walkStopAnimationSpeed = 1f;
     [SerializeField] private float walkAnimationReferenceSpeed = 1.65f;
@@ -120,9 +131,13 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private bool attachedHandsSnap;
     private const string CustomModelName = "__Custom_Model";
     private const string CharacterModelName = "Character Model";
+    private float idleAnimationTime;
     private float walkAnimationTime = 1f;
     private bool wasWalking;
-    private bool wasWalkingBackward;
+    private bool wasWalkingReversed;
+    private MoveAnimationKind currentMoveAnimationKind = MoveAnimationKind.Walk;
+    private MoveAnimationKind previousMoveAnimationKind = MoveAnimationKind.Walk;
+    private AnimationClip activePlayableClip;
     private PlayableGraph walkGraph;
     private AnimationClipPlayable walkPlayable;
     private Transform headLookTransform;
@@ -130,7 +145,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private float targetHeadLookPitch;
     private float currentHeadLookPitch;
 
-    public Vector3 HitboxLocalOffset => applyCharacterModelOffsetToHitbox && characterModel != null
+    public Vector3 HitboxLocalOffset => characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
         : Vector3.zero;
 
@@ -186,8 +201,11 @@ public sealed class TinyRaymanBody : MonoBehaviour
         float forwardAmount = flatVelocity.sqrMagnitude > 0.0001f
             ? Vector3.Dot(flatVelocity.normalized, transform.forward)
             : 0f;
+        float strafeAmount = flatVelocity.sqrMagnitude > 0.0001f
+            ? Vector3.Dot(flatVelocity.normalized, transform.right)
+            : 0f;
 
-        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, deltaTime);
+        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, strafeAmount, deltaTime);
 
         float follow = 1f - Mathf.Exp(-followSharpness * deltaTime);
         UpdateCoreParts(speed01, follow);
@@ -633,7 +651,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
         MoveLocal(head, new Vector3(0f, 0.36f + bodyBob * 0.5f, 0.08f), follow);
     }
 
-    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float deltaTime)
+    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float strafeAmount, float deltaTime)
     {
         if (!driveWalkAnimation || characterAnimator == null)
         {
@@ -641,7 +659,9 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         bool isWalking = speed01 > walkAnimationMoveThreshold;
-        bool isWalkingBackward = isWalking && forwardAmount < -0.2f;
+        bool useStrafeAnimation = isWalking && Mathf.Abs(strafeAmount) > Mathf.Abs(forwardAmount) && Mathf.Abs(strafeAmount) > 0.2f;
+        currentMoveAnimationKind = useStrafeAnimation ? MoveAnimationKind.Strafe : MoveAnimationKind.Walk;
+        bool isAnimationReversed = isWalking && (useStrafeAnimation ? strafeAmount < -0.2f : forwardAmount < -0.2f);
         float loopStart = Mathf.Clamp01(walkLoopStartNormalized);
         float loopEnd = Mathf.Clamp(walkLoopEndNormalized, loopStart + 0.01f, 1f);
         float stopStart = Mathf.Clamp(walkStopStartNormalized, loopStart, 1f);
@@ -652,12 +672,12 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         if (isWalking)
         {
-            if (!wasWalking || wasWalkingBackward != isWalkingBackward)
+            if (!wasWalking || wasWalkingReversed != isAnimationReversed || previousMoveAnimationKind != currentMoveAnimationKind)
             {
-                walkAnimationTime = isWalkingBackward ? loopEnd : 0f;
+                walkAnimationTime = isAnimationReversed ? loopEnd : 0f;
             }
 
-            if (isWalkingBackward)
+            if (isAnimationReversed)
             {
                 walkAnimationTime -= loopTimeStep;
                 if (walkAnimationTime <= loopStart)
@@ -686,35 +706,122 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         wasWalking = isWalking;
-        wasWalkingBackward = isWalkingBackward;
-        if (animatorController != null && !string.IsNullOrEmpty(walkAnimationStateName))
+        wasWalkingReversed = isAnimationReversed;
+        previousMoveAnimationKind = currentMoveAnimationKind;
+
+        if (!isWalking && walkAnimationTime >= 1f && TryPlayIdleAnimation(deltaTime))
+        {
+            return;
+        }
+
+        string stateName = GetCurrentAnimationStateName();
+        if (animatorController != null && !string.IsNullOrEmpty(stateName))
         {
             characterAnimator.SetBool(animatorWalkingBool, isWalking);
-            characterAnimator.Play(walkAnimationStateName, 0, walkAnimationTime);
+            characterAnimator.Play(stateName, 0, walkAnimationTime);
             characterAnimator.Update(0f);
             return;
         }
 
-        if (!walkGraph.IsValid() || !walkPlayable.IsValid() || walkAnimationClip == null)
+        AnimationClip clip = GetCurrentAnimationClip();
+        if (clip == null)
         {
             return;
         }
 
-        walkPlayable.SetTime(Mathf.Clamp01(walkAnimationTime) * walkAnimationClip.length);
+        EnsureWalkPlayable(clip);
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid())
+        {
+            return;
+        }
+
+        walkPlayable.SetTime(Mathf.Clamp01(walkAnimationTime) * clip.length);
         walkGraph.Evaluate(0f);
+    }
+
+    private bool TryPlayIdleAnimation(float deltaTime)
+    {
+        if (idleAnimationClip == null && string.IsNullOrEmpty(idleAnimationStateName))
+        {
+            return false;
+        }
+
+        idleAnimationTime = Mathf.Repeat(
+            idleAnimationTime + deltaTime * Mathf.Max(0.01f, idleAnimationSpeed),
+            1f);
+
+        if (animatorController != null && !string.IsNullOrEmpty(idleAnimationStateName))
+        {
+            characterAnimator.SetBool(animatorWalkingBool, false);
+            characterAnimator.Play(idleAnimationStateName, 0, idleAnimationTime);
+            characterAnimator.Update(0f);
+            return true;
+        }
+
+        if (idleAnimationClip == null)
+        {
+            return false;
+        }
+
+        EnsureWalkPlayable(idleAnimationClip);
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid())
+        {
+            return false;
+        }
+
+        walkPlayable.SetTime(idleAnimationTime * idleAnimationClip.length);
+        walkGraph.Evaluate(0f);
+        return true;
+    }
+
+    private AnimationClip GetCurrentAnimationClip()
+    {
+        if (currentMoveAnimationKind == MoveAnimationKind.Strafe && strafeWalkAnimationClip != null)
+        {
+            return strafeWalkAnimationClip;
+        }
+
+        return walkAnimationClip;
+    }
+
+    private string GetCurrentAnimationStateName()
+    {
+        if (currentMoveAnimationKind == MoveAnimationKind.Strafe && !string.IsNullOrEmpty(strafeWalkAnimationStateName))
+        {
+            return strafeWalkAnimationStateName;
+        }
+
+        return walkAnimationStateName;
     }
 
     private void SetupWalkPlayable()
     {
         DestroyWalkGraph();
-        if (walkAnimationClip == null || characterAnimator == null || animatorController != null)
+        if (characterAnimator == null || animatorController != null)
         {
             return;
         }
 
+        EnsureWalkPlayable(idleAnimationClip != null ? idleAnimationClip : walkAnimationClip);
+    }
+
+    private void EnsureWalkPlayable(AnimationClip clip)
+    {
+        if (clip == null || characterAnimator == null || animatorController != null)
+        {
+            return;
+        }
+
+        if (walkGraph.IsValid() && walkPlayable.IsValid() && activePlayableClip == clip)
+        {
+            return;
+        }
+
+        DestroyWalkGraph();
+        activePlayableClip = clip;
         walkGraph = PlayableGraph.Create("Tiny Character Walk");
         walkGraph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
-        walkPlayable = AnimationClipPlayable.Create(walkGraph, walkAnimationClip);
+        walkPlayable = AnimationClipPlayable.Create(walkGraph, clip);
         walkPlayable.SetApplyFootIK(false);
         walkPlayable.SetSpeed(0f);
 
@@ -729,6 +836,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
         {
             walkGraph.Destroy();
         }
+
+        activePlayableClip = null;
     }
 
     private void UpdateHands(float speed01, float follow, float deltaTime)
