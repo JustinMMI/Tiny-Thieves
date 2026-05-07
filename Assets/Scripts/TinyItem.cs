@@ -31,11 +31,14 @@ public sealed class TinyItem : MonoBehaviour
     private bool hadRigidbody;
     private bool originalIsKinematic;
     private bool originalUseGravity;
+    private bool isRemoteHeld;
+    private bool hasOriginalPhysics;
 
     public string ItemName => itemName;
     public float WeightKilograms => weightKilograms;
     public int Value => value;
     public bool IsHeld { get; private set; }
+    public bool IsNetworkHeld => IsHeld || isRemoteHeld;
 
     private void Awake()
     {
@@ -70,14 +73,20 @@ public sealed class TinyItem : MonoBehaviour
         }
 
         CachePhysics();
+        isRemoteHeld = false;
         IsHeld = true;
         originalParent = transform.parent;
 
         if (itemRigidbody != null)
         {
             hadRigidbody = true;
-            originalIsKinematic = itemRigidbody.isKinematic;
-            originalUseGravity = itemRigidbody.useGravity;
+            if (!hasOriginalPhysics)
+            {
+                originalIsKinematic = itemRigidbody.isKinematic;
+                originalUseGravity = itemRigidbody.useGravity;
+                hasOriginalPhysics = true;
+            }
+
             itemRigidbody.isKinematic = true;
             itemRigidbody.useGravity = false;
             itemRigidbody.interpolation = RigidbodyInterpolation.None;
@@ -121,6 +130,7 @@ public sealed class TinyItem : MonoBehaviour
             return;
         }
 
+        isRemoteHeld = false;
         transform.SetParent(originalParent, true);
         transform.position = worldPosition;
         transform.rotation = worldRotation;
@@ -141,6 +151,76 @@ public sealed class TinyItem : MonoBehaviour
         }
 
         IsHeld = false;
+    }
+
+    public void ApplyRemoteHeldState(bool remoteHeld)
+    {
+        if (IsHeld)
+        {
+            return;
+        }
+
+        if (remoteHeld)
+        {
+            if (isRemoteHeld)
+            {
+                return;
+            }
+
+            CachePhysics();
+            isRemoteHeld = true;
+            if (itemRigidbody != null)
+            {
+                itemRigidbody.isKinematic = true;
+                itemRigidbody.useGravity = false;
+                itemRigidbody.interpolation = RigidbodyInterpolation.None;
+#if UNITY_6000_0_OR_NEWER
+                itemRigidbody.linearVelocity = Vector3.zero;
+#else
+                itemRigidbody.velocity = Vector3.zero;
+#endif
+                itemRigidbody.angularVelocity = Vector3.zero;
+            }
+
+            SetCollidersEnabled(false);
+            return;
+        }
+
+        isRemoteHeld = false;
+        RestoreColliders();
+        if (itemRigidbody != null)
+        {
+            itemRigidbody.isKinematic = originalIsKinematic;
+            itemRigidbody.useGravity = originalUseGravity;
+            ConfigurePhysics();
+        }
+    }
+
+    public void ApplyAuthoritativeRelease(Vector3 worldPosition, Quaternion worldRotation, Vector3 velocity)
+    {
+        if (IsHeld)
+        {
+            Release(worldPosition, worldRotation, velocity);
+            return;
+        }
+
+        isRemoteHeld = false;
+        transform.SetParent(originalParent, true);
+        transform.SetPositionAndRotation(worldPosition, worldRotation);
+        RestoreColliders();
+
+        if (itemRigidbody != null)
+        {
+            itemRigidbody.isKinematic = originalIsKinematic;
+            itemRigidbody.useGravity = originalUseGravity;
+            ConfigurePhysics();
+#if UNITY_6000_0_OR_NEWER
+            itemRigidbody.linearVelocity = velocity;
+#else
+            itemRigidbody.velocity = velocity;
+#endif
+            itemRigidbody.angularVelocity = Vector3.zero;
+        }
     }
 
     public void GetHandAnchors(Transform playerRoot, out Vector3 leftAnchor, out Vector3 rightAnchor)
@@ -182,6 +262,13 @@ public sealed class TinyItem : MonoBehaviour
     {
         itemRigidbody = GetComponent<Rigidbody>();
         hadRigidbody = itemRigidbody != null;
+        if (!IsHeld && !isRemoteHeld && itemRigidbody != null && !hasOriginalPhysics)
+        {
+            originalIsKinematic = itemRigidbody.isKinematic;
+            originalUseGravity = itemRigidbody.useGravity;
+            hasOriginalPhysics = true;
+        }
+
         itemColliders = GetComponentsInChildren<Collider>(true);
         colliderEnabledStates = new bool[itemColliders.Length];
 

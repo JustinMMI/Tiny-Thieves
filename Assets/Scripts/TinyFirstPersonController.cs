@@ -94,6 +94,9 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private TinyRailWagon focusedWagon;
     private TinyRailWagon pushingWagon;
 
+    public float CurrentPitch => pitch;
+    public Transform HeldItemTransform => heldItem != null ? heldItem.transform : null;
+
     private void Awake()
     {
         controller = GetComponent<CharacterController>();
@@ -635,7 +638,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         TinyItem item = hit.collider.GetComponentInParent<TinyItem>();
-        if (item != null && !item.IsHeld)
+        if (item != null && !item.IsNetworkHeld)
         {
             focusedItem = item;
         }
@@ -708,6 +711,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         item.PickUp(itemHoldPoint, true);
         heldItem = item;
         heldItemMotionTimer = 0f;
+        TinyNetcodeManager.TrySendItemPickup(item.transform);
 
         Vector3 pullStartLocalPosition = itemHoldPoint.localPosition;
         Quaternion pullStartLocalRotation = itemHoldPoint.localRotation;
@@ -748,10 +752,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             Vector3 throwDirection = cameraPivot != null ? cameraPivot.forward : transform.forward;
             float force = itemThrowForce / (1f + item.WeightKilograms * itemThrowWeightSlowdown);
-            item.Throw(dropPosition, dropRotation, throwDirection.normalized * force);
+            Vector3 throwVelocity = throwDirection.normalized * force;
+            TinyNetcodeManager.TrySendItemRelease(item.transform, dropPosition, dropRotation, throwVelocity);
+            item.Throw(dropPosition, dropRotation, throwVelocity);
         }
         else
         {
+            TinyNetcodeManager.TrySendItemRelease(item.transform, dropPosition, dropRotation, Vector3.zero);
             item.Drop(dropPosition, dropRotation);
         }
 
@@ -850,7 +857,16 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         Vector2 input = ReadMoveInput();
-        Vector3 wagonDelta = pushingWagon.PushFromPlayer(transform, input.y, Time.deltaTime);
+        Vector3 wagonDelta = Vector3.zero;
+        if (TinyNetcodeManager.IsClientOnlyActive)
+        {
+            TinyNetcodeManager.TrySendWagonPush(pushingWagon.transform, input.y, transform.position, transform.rotation);
+        }
+        else
+        {
+            wagonDelta = pushingWagon.PushFromPlayer(transform, input.y, Time.deltaTime);
+        }
+
         if (wagonDelta.sqrMagnitude > 0.000001f)
         {
             controller.Move(wagonDelta);

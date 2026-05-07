@@ -48,6 +48,8 @@ public sealed class TinyRailWagon : MonoBehaviour
     private Quaternion[] wheelBaseLocalRotations;
 
     public float InteractDistance => interactDistance;
+    public float DistanceOnRail => distanceOnRail;
+    public float WheelRollAngle => wheelRollAngle;
 
     private void Awake()
     {
@@ -87,7 +89,12 @@ public sealed class TinyRailWagon : MonoBehaviour
             return 1;
         }
 
-        float side = Vector3.Dot(player.position - GetReferencePosition(), GetReferenceRotation() * Vector3.forward);
+        return GetPlayerSide(player.position);
+    }
+
+    public int GetPlayerSide(Vector3 playerPosition)
+    {
+        float side = Vector3.Dot(playerPosition - GetReferencePosition(), GetReferenceRotation() * Vector3.forward);
         return side >= 0f ? -1 : 1;
     }
 
@@ -100,6 +107,22 @@ public sealed class TinyRailWagon : MonoBehaviour
 
         Vector3 previousPosition = GetReferencePosition();
         int side = GetPlayerSide(player);
+        float previousDistance = distanceOnRail;
+        distanceOnRail = railPath.ClampDistance(distanceOnRail + input * side * pushSpeed * deltaTime);
+        RotateWheels(distanceOnRail - previousDistance);
+        Vector3 targetPosition = ApplyRailPose(false);
+        return targetPosition - previousPosition;
+    }
+
+    public Vector3 PushFromNetwork(Vector3 playerPosition, float input, float deltaTime)
+    {
+        if (railPath == null || Mathf.Abs(input) < 0.01f)
+        {
+            return Vector3.zero;
+        }
+
+        Vector3 previousPosition = GetReferencePosition();
+        int side = GetPlayerSide(playerPosition);
         float previousDistance = distanceOnRail;
         distanceOnRail = railPath.ClampDistance(distanceOnRail + input * side * pushSpeed * deltaTime);
         RotateWheels(distanceOnRail - previousDistance);
@@ -238,6 +261,30 @@ public sealed class TinyRailWagon : MonoBehaviour
         }
 
         wheelRollAngle -= distanceDelta * wheelRotationDegreesPerMeter;
+        ApplyWheelRotations();
+    }
+
+    public void ApplyRemoteWheelRollAngle(float angle)
+    {
+        wheelRollAngle = angle;
+        ApplyWheelRotations();
+    }
+
+    public void ApplyRemoteRailState(float railDistance, float wheelAngle)
+    {
+        distanceOnRail = railPath != null ? railPath.ClampDistance(railDistance) : railDistance;
+        wheelRollAngle = wheelAngle;
+        ApplyWheelRotations();
+        ApplyRailPose(false);
+    }
+
+    private void ApplyWheelRotations()
+    {
+        if (wheels == null || wheels.Length == 0)
+        {
+            return;
+        }
+
         for (int i = 0; i < wheels.Length; i++)
         {
             if (wheels[i] != null)

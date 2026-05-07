@@ -207,6 +207,48 @@ public sealed class TinyRaymanBody : MonoBehaviour
         ApplyCharacterSkin();
     }
 
+    public bool TryGetHandPoses(
+        out Vector3 leftPosition,
+        out Quaternion leftRotation,
+        out Vector3 rightPosition,
+        out Quaternion rightRotation)
+    {
+        if (leftHand == null || rightHand == null)
+        {
+            leftPosition = Vector3.zero;
+            leftRotation = Quaternion.identity;
+            rightPosition = Vector3.zero;
+            rightRotation = Quaternion.identity;
+            return false;
+        }
+
+        leftPosition = leftHand.position;
+        leftRotation = leftHand.rotation;
+        rightPosition = rightHand.position;
+        rightRotation = rightHand.rotation;
+        return true;
+    }
+
+    public void ApplyRemoteHandPoses(
+        Vector3 leftPosition,
+        Quaternion leftRotation,
+        Vector3 rightPosition,
+        Quaternion rightRotation,
+        bool snap)
+    {
+        AttachHands(leftPosition - Vector3.up * handGripLift, rightPosition - Vector3.up * handGripLift, leftRotation, rightRotation, snap);
+    }
+
+    public void ApplyRemoteHandAnchors(
+        Vector3 leftAnchor,
+        Quaternion leftRotation,
+        Vector3 rightAnchor,
+        Quaternion rightRotation,
+        bool snap)
+    {
+        AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, snap);
+    }
+
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
     {
         AttachHands(
