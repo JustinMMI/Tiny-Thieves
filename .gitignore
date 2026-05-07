@@ -120,3 +120,4 @@ InitTestScene*.unity*
 # Built Visual Studio Code Extensions
 *.vsix
 Assets/Scenes/Minigames/PenduBob.unity
+relay_join_code.txt
