@@ -29,6 +29,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float standingEyeHeight = 0.46f;
     [SerializeField] private float crouchingEyeHeight = 0.25f;
     [SerializeField] private float cameraForwardOffset = 0.2f;
+    [SerializeField] private Vector3 manualCameraLocalOffset = Vector3.zero;
     [SerializeField] private Vector3 manualHitboxCenterOffset = Vector3.zero;
     [SerializeField] private float crouchLerpSpeed = 14f;
 
@@ -345,7 +346,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         cameraPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
         if (raymanBody != null)
         {
-            raymanBody.SetCameraPitch(pitch);
+            raymanBody.SetCameraLook(pitch, cameraPivot.rotation);
         }
     }
 
@@ -369,6 +370,10 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         if (controller.isGrounded && !isCrouching && Keyboard.current.spaceKey.wasPressedThisFrame)
         {
             verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+            if (raymanBody != null)
+            {
+                raymanBody.NotifyJump();
+            }
         }
 
         verticalVelocity += gravity * Time.deltaTime;
@@ -635,7 +640,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             return;
         }
 
-        Vector3 targetPosition = new Vector3(0f, currentEyeHeight + bobOffset + climbCameraOffset, cameraForwardOffset);
+        Vector3 targetPosition = new Vector3(0f, currentEyeHeight + bobOffset + climbCameraOffset, cameraForwardOffset)
+            + manualCameraLocalOffset;
         cameraPivot.localPosition = snap
             ? targetPosition
             : Vector3.Lerp(cameraPivot.localPosition, targetPosition, crouchLerpSpeed * Time.deltaTime);

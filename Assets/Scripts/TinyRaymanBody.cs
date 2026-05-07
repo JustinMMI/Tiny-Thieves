@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
@@ -56,25 +58,32 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     [Header("Head Look")]
     [SerializeField] private bool driveHeadLookWithCamera = true;
-    [SerializeField] private string headLookTransformName = "Head";
+    [SerializeField] private string headLookTransformName = "BonesTête";
     [SerializeField] private float headLookPitchInfluence = 0.65f;
     [SerializeField] private float headLookMinPitch = -35f;
     [SerializeField] private float headLookMaxPitch = 45f;
     [SerializeField] private float headLookSharpness = 18f;
+    [SerializeField] private bool headLookUseCameraWorldRotation = true;
+    [SerializeField] private Vector3 headLookWorldEulerOffset = Vector3.zero;
 
     [Header("Character Animation")]
     [SerializeField] private bool driveWalkAnimation = true;
     [SerializeField] private AnimationClip idleAnimationClip;
     [SerializeField] private AnimationClip walkAnimationClip;
     [SerializeField] private AnimationClip strafeWalkAnimationClip;
+    [SerializeField] private AnimationClip jumpAnimationClip;
     [SerializeField] private RuntimeAnimatorController animatorController;
     [SerializeField] private string animatorWalkingBool = "IsWalking";
     [SerializeField] private string idleAnimationStateName = "Idle";
     [SerializeField] private string walkAnimationStateName = "walk";
     [SerializeField] private string strafeWalkAnimationStateName = "StraffWalk";
+    [SerializeField] private string jumpAnimationStateName = "Jump";
     [SerializeField] private float idleAnimationSpeed = 1f;
     [SerializeField] private float walkAnimationSpeed = 1f;
     [SerializeField] private float walkStopAnimationSpeed = 1f;
+    [SerializeField] private float jumpAnimationSpeed = 1f;
+    [SerializeField] private float airborneVelocityThreshold = 0.08f;
+    [SerializeField, Range(0.01f, 1f)] private float jumpAnimationEndNormalized = 0.65f;
     [SerializeField] private float walkAnimationReferenceSpeed = 1.65f;
     [SerializeField, Range(0f, 1f)] private float walkLoopStartNormalized = 0.22f;
     [SerializeField, Range(0f, 1f)] private float walkLoopEndNormalized = 0.78f;
@@ -95,6 +104,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private float followSharpness = 18f;
     [SerializeField] private float limbBobAmount = 0.035f;
     [SerializeField] private float limbSwingAmount = 0.055f;
+    [SerializeField] private float jumpHandLift = 0.055f;
     [SerializeField] private float handGripSharpness = 22f;
     [SerializeField] private float handGripLift = 0.02f;
     [FormerlySerializedAs("attachedHandWorldEulerAngles")]
@@ -135,6 +145,10 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private float walkAnimationTime = 1f;
     private bool wasWalking;
     private bool wasWalkingReversed;
+    private bool isAirborneAnimationActive;
+    private bool isJumpAnimationActive;
+    private bool airborneHasLeftGround;
+    private float airAnimationTime;
     private MoveAnimationKind currentMoveAnimationKind = MoveAnimationKind.Walk;
     private MoveAnimationKind previousMoveAnimationKind = MoveAnimationKind.Walk;
     private AnimationClip activePlayableClip;
@@ -144,6 +158,10 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private Quaternion headLookBaseLocalRotation = Quaternion.identity;
     private float targetHeadLookPitch;
     private float currentHeadLookPitch;
+    private Quaternion targetHeadLookWorldRotation = Quaternion.identity;
+    private bool hasHeadLookWorldRotation;
+    private bool headLookHasPreferredTarget;
+    private bool headLookNeedsAnimatorRefresh;
 
     public Vector3 HitboxLocalOffset => characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
@@ -197,6 +215,11 @@ public sealed class TinyRaymanBody : MonoBehaviour
         Vector3 flatVelocity = Vector3.ProjectOnPlane(velocity, Vector3.up);
         float flatSpeed = flatVelocity.magnitude;
         float speed01 = Mathf.Clamp01(flatSpeed / 2.2f);
+        float verticalSpeed = velocity.y;
+        bool isGrounded = controller != null && controller.enabled
+            ? controller.isGrounded
+            : Mathf.Abs(verticalSpeed) <= airborneVelocityThreshold;
+
         moveCycle += speed01 * deltaTime * 9f;
         float forwardAmount = flatVelocity.sqrMagnitude > 0.0001f
             ? Vector3.Dot(flatVelocity.normalized, transform.forward)
@@ -205,7 +228,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
             ? Vector3.Dot(flatVelocity.normalized, transform.right)
             : 0f;
 
-        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, strafeAmount, deltaTime);
+        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, strafeAmount, verticalSpeed, isGrounded, deltaTime);
 
         float follow = 1f - Mathf.Exp(-followSharpness * deltaTime);
         UpdateCoreParts(speed01, follow);
@@ -217,6 +240,22 @@ public sealed class TinyRaymanBody : MonoBehaviour
     public void SetCameraPitch(float cameraPitch)
     {
         targetHeadLookPitch = Mathf.Clamp(cameraPitch * headLookPitchInfluence, headLookMinPitch, headLookMaxPitch);
+        hasHeadLookWorldRotation = false;
+    }
+
+    public void SetCameraLook(float cameraPitch, Quaternion cameraWorldRotation)
+    {
+        SetCameraPitch(cameraPitch);
+        targetHeadLookWorldRotation = cameraWorldRotation;
+        hasHeadLookWorldRotation = true;
+    }
+
+    public void NotifyJump()
+    {
+        isAirborneAnimationActive = true;
+        isJumpAnimationActive = true;
+        airborneHasLeftGround = false;
+        airAnimationTime = 0f;
     }
 
     public void SetSkin(int skinIndex)
@@ -403,7 +442,6 @@ public sealed class TinyRaymanBody : MonoBehaviour
         EnsureCustomModel(modelRoot, characterModel, Vector3.zero, Vector3.zero, Vector3.one);
         ConfigureCharacterRenderers(modelRoot);
         ApplyCharacterSkin();
-        ResolveHeadLookTransform();
         characterAnimator = modelRoot.GetComponentInChildren<Animator>(true);
         if (characterAnimator == null)
         {
@@ -423,6 +461,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         SetupWalkPlayable();
         characterAnimator.Update(0f);
+        ResolveHeadLookTransform();
+        headLookNeedsAnimatorRefresh = true;
         return modelRoot;
     }
 
@@ -526,9 +566,15 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private void ResolveHeadLookTransform()
     {
         headLookTransform = null;
+        headLookHasPreferredTarget = false;
         if (characterModelRoot != null)
         {
-            headLookTransform = FindTransformByName(characterModelRoot, headLookTransformName);
+            headLookTransform = FindPreferredHeadLookTransform(characterModelRoot);
+            headLookHasPreferredTarget = headLookTransform != null;
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, headLookTransformName);
+            }
             if (headLookTransform == null)
             {
                 headLookTransform = FindTransformByName(characterModelRoot, "head");
@@ -545,10 +591,14 @@ public sealed class TinyRaymanBody : MonoBehaviour
         else
         {
             headLookTransform = head;
+            headLookHasPreferredTarget = true;
         }
 
         headLookBaseLocalRotation = headLookTransform != null
             ? headLookTransform.localRotation
+            : Quaternion.identity;
+        targetHeadLookWorldRotation = headLookTransform != null
+            ? headLookTransform.rotation
             : Quaternion.identity;
         currentHeadLookPitch = targetHeadLookPitch;
     }
@@ -651,9 +701,14 @@ public sealed class TinyRaymanBody : MonoBehaviour
         MoveLocal(head, new Vector3(0f, 0.36f + bodyBob * 0.5f, 0.08f), follow);
     }
 
-    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float strafeAmount, float deltaTime)
+    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float strafeAmount, float verticalSpeed, bool isGrounded, float deltaTime)
     {
         if (!driveWalkAnimation || characterAnimator == null)
+        {
+            return;
+        }
+
+        if (TryPlayAirAnimation(verticalSpeed, isGrounded, deltaTime))
         {
             return;
         }
@@ -737,6 +792,88 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         walkPlayable.SetTime(Mathf.Clamp01(walkAnimationTime) * clip.length);
         walkGraph.Evaluate(0f);
+    }
+
+    private bool TryPlayAirAnimation(float verticalSpeed, bool isGrounded, float deltaTime)
+    {
+        bool shouldBeAirborne = isAirborneAnimationActive;
+        if (!isGrounded)
+        {
+            airborneHasLeftGround = true;
+        }
+
+        if (!shouldBeAirborne && !isAirborneAnimationActive)
+        {
+            return false;
+        }
+
+        if (isGrounded && airborneHasLeftGround && isAirborneAnimationActive)
+        {
+            isAirborneAnimationActive = false;
+            isJumpAnimationActive = false;
+            airborneHasLeftGround = false;
+            airAnimationTime = 0f;
+            return false;
+        }
+
+        if (!isAirborneAnimationActive)
+        {
+            return false;
+        }
+
+        float jumpEnd = Mathf.Clamp01(jumpAnimationEndNormalized);
+        if (!HasJumpAnimation())
+        {
+            isAirborneAnimationActive = false;
+            isJumpAnimationActive = false;
+            airAnimationTime = 0f;
+            return false;
+        }
+
+        string stateName = jumpAnimationStateName;
+        AnimationClip clip = jumpAnimationClip;
+        float speed = jumpAnimationSpeed;
+
+        if (string.IsNullOrEmpty(stateName) && clip == null)
+        {
+            return false;
+        }
+
+        airAnimationTime = Mathf.Min(jumpEnd, airAnimationTime + deltaTime * Mathf.Max(0.01f, speed));
+        isJumpAnimationActive = airAnimationTime < jumpEnd;
+
+        wasWalking = false;
+        walkAnimationTime = 1f;
+
+        if (animatorController != null && !string.IsNullOrEmpty(stateName))
+        {
+            characterAnimator.SetBool(animatorWalkingBool, false);
+            characterAnimator.Play(stateName, 0, airAnimationTime);
+            characterAnimator.Update(0f);
+            return true;
+        }
+
+        if (clip == null)
+        {
+            return false;
+        }
+
+        EnsureWalkPlayable(clip);
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid())
+        {
+            return false;
+        }
+
+        walkPlayable.SetTime(Mathf.Clamp01(airAnimationTime) * clip.length);
+        walkGraph.Evaluate(0f);
+        return true;
+    }
+
+    private bool HasJumpAnimation()
+    {
+        return animatorController != null
+            ? !string.IsNullOrEmpty(jumpAnimationStateName)
+            : jumpAnimationClip != null;
     }
 
     private bool TryPlayIdleAnimation(float deltaTime)
@@ -861,8 +998,19 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         float leftPhase = Mathf.Sin(moveCycle);
         float rightPhase = Mathf.Sin(moveCycle + Mathf.PI);
-        MoveLocal(leftHand, new Vector3(-0.17f, 0.24f + leftPhase * limbBobAmount * speed01, 0.1f + leftPhase * limbSwingAmount * speed01), follow);
-        MoveLocal(rightHand, new Vector3(0.17f, 0.24f + rightPhase * limbBobAmount * speed01, 0.1f + rightPhase * limbSwingAmount * speed01), follow);
+        float airborneHandOffset = GetAirborneHandOffset();
+        MoveLocal(leftHand, new Vector3(-0.17f, 0.24f + airborneHandOffset + leftPhase * limbBobAmount * speed01, 0.1f + leftPhase * limbSwingAmount * speed01), follow);
+        MoveLocal(rightHand, new Vector3(0.17f, 0.24f + airborneHandOffset + rightPhase * limbBobAmount * speed01, 0.1f + rightPhase * limbSwingAmount * speed01), follow);
+    }
+
+    private float GetAirborneHandOffset()
+    {
+        if (!isAirborneAnimationActive)
+        {
+            return 0f;
+        }
+
+        return Mathf.Sin(Mathf.Clamp01(airAnimationTime) * Mathf.PI * 0.5f) * jumpHandLift;
     }
 
     private void UpdateFeet(float speed01, float follow)
@@ -887,17 +1035,38 @@ public sealed class TinyRaymanBody : MonoBehaviour
             return;
         }
 
-        if (headLookTransform == null)
+        if (headLookNeedsAnimatorRefresh || headLookTransform == null)
         {
             ResolveHeadLookTransform();
+            headLookNeedsAnimatorRefresh = characterModelRoot != null && !headLookHasPreferredTarget;
             if (headLookTransform == null)
             {
                 return;
             }
         }
+        else if (characterModelRoot != null && !headLookHasPreferredTarget)
+        {
+            Transform preferredTarget = FindPreferredHeadLookTransform(characterModelRoot);
+            if (preferredTarget != null)
+            {
+                headLookTransform = preferredTarget;
+                headLookHasPreferredTarget = true;
+                headLookBaseLocalRotation = headLookTransform.localRotation;
+            }
+        }
 
         float follow = 1f - Mathf.Exp(-headLookSharpness * deltaTime);
         currentHeadLookPitch = Mathf.Lerp(currentHeadLookPitch, targetHeadLookPitch, follow);
+        if (headLookUseCameraWorldRotation)
+        {
+            Quaternion targetWorldRotation = hasHeadLookWorldRotation
+                ? targetHeadLookWorldRotation
+                : Quaternion.Euler(currentHeadLookPitch, transform.eulerAngles.y, 0f);
+            targetWorldRotation *= Quaternion.Euler(headLookWorldEulerOffset);
+            headLookTransform.rotation = Quaternion.Slerp(headLookTransform.rotation, targetWorldRotation, follow);
+            return;
+        }
+
         headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(currentHeadLookPitch, 0f, 0f);
     }
 
@@ -955,6 +1124,115 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         return null;
+    }
+
+    private static Transform FindPreferredHeadLookTransform(Transform root)
+    {
+        Transform target = FindExactTransformByName(root, "BonesTête");
+        if (target != null)
+        {
+            return target;
+        }
+
+        target = FindExactTransformByName(root, "BonesTete");
+        if (target != null)
+        {
+            return target;
+        }
+
+        target = FindNormalizedTransformByName(root, "BonesTete");
+        return target != null ? target : FindTransformByPrefix(root, "BonesT");
+    }
+
+    private static Transform FindExactTransformByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (root.name.Equals(name, StringComparison.OrdinalIgnoreCase))
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindExactTransformByName(root.GetChild(i), name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static Transform FindNormalizedTransformByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        string normalizedName = NormalizeTransformName(name);
+        if (NormalizeTransformName(root.name) == normalizedName)
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindNormalizedTransformByName(root.GetChild(i), name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static Transform FindTransformByPrefix(Transform root, string prefix)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(prefix))
+        {
+            return null;
+        }
+
+        if (root.name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindTransformByPrefix(root.GetChild(i), prefix);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeTransformName(string value)
+    {
+        string normalized = value.Normalize(NormalizationForm.FormD);
+        char[] buffer = new char[normalized.Length];
+        int count = 0;
+        for (int i = 0; i < normalized.Length; i++)
+        {
+            UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(normalized[i]);
+            if (category != UnicodeCategory.NonSpacingMark && char.IsLetterOrDigit(normalized[i]))
+            {
+                buffer[count] = char.ToLowerInvariant(normalized[i]);
+                count++;
+            }
+        }
+
+        return new string(buffer, 0, count);
     }
 
     private static void SetWorld(Transform target, Vector3 worldPosition, Quaternion worldRotation)

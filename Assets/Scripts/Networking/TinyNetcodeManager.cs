@@ -41,6 +41,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const byte IntentGrabWagon = 4;
     private const byte IntentReleaseWagon = 5;
 
+#if TINY_HAS_RELAY
+    private static Task unityServicesInitializationTask;
+    private static Task unityAuthenticationTask;
+#endif
+
     private readonly Dictionary<ulong, RemotePlayer> remotePlayers = new Dictionary<ulong, RemotePlayer>();
     private readonly Dictionary<string, Transform> syncedEntities = new Dictionary<string, Transform>();
     private readonly Dictionary<string, TimedPoseState> remoteEntityTargets = new Dictionary<string, TimedPoseState>();
@@ -382,14 +387,41 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 #if TINY_HAS_RELAY
     private static async Task EnsureUnityServicesSignedInAsync()
     {
-        if (UnityServices.State == ServicesInitializationState.Uninitialized)
+        if (UnityServices.State != ServicesInitializationState.Initialized)
         {
-            await UnityServices.InitializeAsync();
+            if (unityServicesInitializationTask == null
+                || unityServicesInitializationTask.IsCanceled
+                || unityServicesInitializationTask.IsFaulted)
+            {
+                if (UnityServices.State == ServicesInitializationState.Uninitialized)
+                {
+                    unityServicesInitializationTask = UnityServices.InitializeAsync();
+                }
+            }
+
+            if (unityServicesInitializationTask != null)
+            {
+                await unityServicesInitializationTask;
+            }
+            else
+            {
+                while (UnityServices.State == ServicesInitializationState.Initializing)
+                {
+                    await Task.Yield();
+                }
+            }
         }
 
         if (!AuthenticationService.Instance.IsSignedIn)
         {
-            await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            if (unityAuthenticationTask == null
+                || unityAuthenticationTask.IsCanceled
+                || unityAuthenticationTask.IsFaulted)
+            {
+                unityAuthenticationTask = AuthenticationService.Instance.SignInAnonymouslyAsync();
+            }
+
+            await unityAuthenticationTask;
         }
     }
 #endif
