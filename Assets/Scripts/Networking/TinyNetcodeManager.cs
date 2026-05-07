@@ -38,6 +38,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const byte IntentPickupItem = 1;
     private const byte IntentReleaseItem = 2;
     private const byte IntentPushWagon = 3;
+    private const byte IntentGrabWagon = 4;
+    private const byte IntentReleaseWagon = 5;
 
     private readonly Dictionary<ulong, RemotePlayer> remotePlayers = new Dictionary<ulong, RemotePlayer>();
     private readonly Dictionary<string, Transform> syncedEntities = new Dictionary<string, Transform>();
@@ -141,6 +143,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         && instance.networkManager.IsListening
         && !instance.networkManager.IsServer;
 
+    public static bool IsNetworkActive =>
+        instance != null
+        && instance.networkManager != null
+        && instance.networkManager.IsListening;
+
     public static bool TrySendItemPickup(Transform item)
     {
         return instance != null && instance.SendItemPickupIntent(item);
@@ -154,6 +161,21 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     public static bool TrySendWagonPush(Transform wagon, float input, Vector3 playerPosition, Quaternion playerRotation)
     {
         return instance != null && instance.SendWagonPushIntent(wagon, input, playerPosition, playerRotation);
+    }
+
+    public static bool TrySendWagonGrab(Transform wagon, Vector3 playerPosition, Quaternion playerRotation)
+    {
+        return instance != null && instance.SendWagonAttachIntent(wagon, playerPosition, playerRotation, true);
+    }
+
+    public static bool TrySendWagonRelease(Transform wagon, Vector3 playerPosition, Quaternion playerRotation)
+    {
+        return instance != null && instance.SendWagonAttachIntent(wagon, playerPosition, playerRotation, false);
+    }
+
+    public static bool CanUseWagonSide(Transform wagon, Transform player)
+    {
+        return instance == null || instance.CanUseWagonSideInternal(wagon, player);
     }
 
     private void EnsureNetworkManager()
@@ -329,6 +351,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void OnClientDisconnect(ulong clientId)
     {
+        activeWagonPushes.Remove(clientId);
+
         if (IsEditorHost() || networkManager == null || clientId != networkManager.LocalClientId)
         {
             Debug.Log("Tiny Netcode client disconnected: " + clientId);
@@ -620,12 +644,75 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private bool SendWagonPushIntent(Transform wagon, float input, Vector3 playerPosition, Quaternion playerRotation)
     {
+        if (networkManager != null && networkManager.IsServer)
+        {
+            string serverKey = GetSyncedEntityKey(wagon);
+            if (string.IsNullOrEmpty(serverKey))
+            {
+                return false;
+            }
+
+            if (!activeWagonPushes.ContainsKey(networkManager.LocalClientId)
+                && !CanClientUseWagonSide(networkManager.LocalClientId, wagon, playerPosition))
+            {
+                return false;
+            }
+
+            activeWagonPushes[networkManager.LocalClientId] = new WagonPushState(
+                serverKey,
+                input,
+                playerPosition,
+                Time.time + WagonPushInputTimeout,
+                true);
+
+            return true;
+        }
+
         if (!CanSendWorldIntent(wagon, out string key))
         {
             return false;
         }
 
         SendWorldIntent(IntentPushWagon, key, wagon.position, wagon.rotation, Vector3.zero, input, playerPosition, playerRotation, NetworkDelivery.UnreliableSequenced);
+        return true;
+    }
+
+    private bool SendWagonAttachIntent(Transform wagon, Vector3 playerPosition, Quaternion playerRotation, bool isGrab)
+    {
+        if (networkManager != null && networkManager.IsServer)
+        {
+            string serverKey = GetSyncedEntityKey(wagon);
+            if (string.IsNullOrEmpty(serverKey))
+            {
+                return false;
+            }
+
+            if (!isGrab)
+            {
+                activeWagonPushes.Remove(networkManager.LocalClientId);
+                return true;
+            }
+
+            if (!CanClientUseWagonSide(networkManager.LocalClientId, wagon, playerPosition))
+            {
+                return false;
+            }
+
+            activeWagonPushes[networkManager.LocalClientId] = new WagonPushState(
+                serverKey,
+                0f,
+                playerPosition,
+                Time.time + WagonPushInputTimeout,
+                true);
+            return true;
+        }
+
+        if (!CanSendWorldIntent(wagon, out string key))
+        {
+            return false;
+        }
+
+        SendWorldIntent(isGrab ? IntentGrabWagon : IntentReleaseWagon, key, wagon.position, wagon.rotation, Vector3.zero, 0f, playerPosition, playerRotation, NetworkDelivery.ReliableSequenced);
         return true;
     }
 
@@ -843,11 +930,41 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             case IntentPushWagon:
                 if (IsWagon(entity))
                 {
+                    if (!activeWagonPushes.ContainsKey(senderClientId)
+                        && !CanClientUseWagonSide(senderClientId, entity, playerPosition))
+                    {
+                        return;
+                    }
+
                     activeWagonPushes[senderClientId] = new WagonPushState(
                         key,
                         input,
                         playerPosition,
-                        Time.time + WagonPushInputTimeout);
+                        Time.time + WagonPushInputTimeout,
+                        true);
+                }
+                break;
+
+            case IntentGrabWagon:
+                if (IsWagon(entity) && CanClientUseWagonSide(senderClientId, entity, playerPosition))
+                {
+                    activeWagonPushes[senderClientId] = new WagonPushState(
+                        key,
+                        0f,
+                        playerPosition,
+                        Time.time + WagonPushInputTimeout,
+                        true);
+                }
+                break;
+
+            case IntentReleaseWagon:
+                if (IsWagon(entity))
+                {
+                    if (activeWagonPushes.TryGetValue(senderClientId, out WagonPushState push)
+                        && push.WagonKey == key)
+                    {
+                        activeWagonPushes.Remove(senderClientId);
+                    }
                 }
                 break;
         }
@@ -861,10 +978,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         List<ulong> expiredClients = null;
-        HashSet<string> movedWagons = null;
+        Dictionary<string, WagonFramePush> wagonPushes = null;
         foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
         {
-            if (Time.time > push.Value.ExpireTime || Mathf.Abs(push.Value.Input) < 0.01f)
+            if (Time.time > push.Value.ExpireTime)
             {
                 expiredClients ??= new List<ulong>();
                 expiredClients.Add(push.Key);
@@ -878,9 +995,16 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 continue;
             }
 
-            InvokePushWagonFromNetwork(wagon, push.Value.PlayerPosition, push.Value.Input, Time.deltaTime);
-            movedWagons ??= new HashSet<string>();
-            movedWagons.Add(push.Value.WagonKey);
+            int side = InvokeGetWagonPlayerSide(wagon, push.Value.PlayerPosition);
+            if (Mathf.Abs(push.Value.Input) < 0.01f)
+            {
+                continue;
+            }
+
+            wagonPushes ??= new Dictionary<string, WagonFramePush>();
+            wagonPushes.TryGetValue(push.Value.WagonKey, out WagonFramePush framePush);
+            framePush.Add(side, push.Value.Input);
+            wagonPushes[push.Value.WagonKey] = framePush;
         }
 
         if (expiredClients != null)
@@ -891,16 +1015,76 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             }
         }
 
-        if (movedWagons != null)
+        if (wagonPushes != null)
         {
-            foreach (string wagonKey in movedWagons)
+            foreach (KeyValuePair<string, WagonFramePush> push in wagonPushes)
             {
-                if (syncedEntities.TryGetValue(wagonKey, out Transform wagon) && wagon != null)
+                if (syncedEntities.TryGetValue(push.Key, out Transform wagon) && wagon != null)
                 {
-                    BroadcastAuthoritativeEntity(wagonKey, wagon);
+                    float railInput = Mathf.Clamp(push.Value.CombinedRailInput, -1f, 1f);
+                    if (Mathf.Abs(railInput) > 0.01f)
+                    {
+                        InvokePushWagonAlongRail(wagon, railInput, Time.deltaTime);
+                        BroadcastAuthoritativeEntity(push.Key, wagon);
+                    }
                 }
             }
         }
+    }
+
+    private bool CanUseWagonSideInternal(Transform wagon, Transform player)
+    {
+        if (wagon == null || player == null || networkManager == null || !networkManager.IsServer)
+        {
+            return true;
+        }
+
+        string wagonKey = GetSyncedEntityKey(wagon);
+        if (string.IsNullOrEmpty(wagonKey))
+        {
+            return true;
+        }
+
+        int requestedSide = InvokeGetWagonPlayerSide(wagon, player.position);
+        foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
+        {
+            if (push.Value.WagonKey != wagonKey || Time.time > push.Value.ExpireTime)
+            {
+                continue;
+            }
+
+            if (InvokeGetWagonPlayerSide(wagon, push.Value.PlayerPosition) == requestedSide)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool CanClientUseWagonSide(ulong clientId, Transform wagon, Vector3 playerPosition)
+    {
+        string wagonKey = GetSyncedEntityKey(wagon);
+        if (string.IsNullOrEmpty(wagonKey))
+        {
+            return true;
+        }
+
+        int requestedSide = InvokeGetWagonPlayerSide(wagon, playerPosition);
+        foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
+        {
+            if (push.Key == clientId || push.Value.WagonKey != wagonKey || Time.time > push.Value.ExpireTime)
+            {
+                continue;
+            }
+
+            if (InvokeGetWagonPlayerSide(wagon, push.Value.PlayerPosition) == requestedSide)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void BroadcastAuthoritativeEntity(string key, Transform entity)
@@ -1263,13 +1447,48 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public readonly float Input;
         public readonly Vector3 PlayerPosition;
         public readonly float ExpireTime;
+        public readonly bool IsAttached;
 
-        public WagonPushState(string wagonKey, float input, Vector3 playerPosition, float expireTime)
+        public WagonPushState(string wagonKey, float input, Vector3 playerPosition, float expireTime, bool isAttached)
         {
             WagonKey = wagonKey;
             Input = input;
             PlayerPosition = playerPosition;
             ExpireTime = expireTime;
+            IsAttached = isAttached;
+        }
+    }
+
+    private struct WagonFramePush
+    {
+        private bool hasBackSide;
+        private bool hasFrontSide;
+        private float backSideInput;
+        private float frontSideInput;
+
+        public float CombinedRailInput => backSideInput + frontSideInput;
+
+        public void Add(int side, float input)
+        {
+            if (side < 0)
+            {
+                if (hasFrontSide)
+                {
+                    return;
+                }
+
+                hasFrontSide = true;
+                frontSideInput = input * side;
+                return;
+            }
+
+            if (hasBackSide)
+            {
+                return;
+            }
+
+            hasBackSide = true;
+            backSideInput = input * side;
         }
     }
 
@@ -1680,9 +1899,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         wagon?.GetType().GetMethod("PushFromNetwork")?.Invoke(wagon, new object[] { playerPosition, input, deltaTime });
     }
 
+    private static void InvokePushWagonAlongRail(Transform entity, float railInput, float deltaTime)
+    {
+        Component wagon = entity != null ? entity.GetComponent("TinyRailWagon") : null;
+        wagon?.GetType().GetMethod("PushAlongRail")?.Invoke(wagon, new object[] { railInput, deltaTime });
+    }
+
+    private static int InvokeGetWagonPlayerSide(Transform entity, Vector3 playerPosition)
+    {
+        Component wagon = entity != null ? entity.GetComponent("TinyRailWagon") : null;
+        object value = wagon?.GetType().GetMethod("GetPlayerSide", new[] { typeof(Vector3) })?.Invoke(wagon, new object[] { playerPosition });
+        return value is int side ? side : 1;
+    }
+
     private static void SetRigidbodyVelocity(Rigidbody rigidbody, Vector3 velocity)
     {
-        if (rigidbody == null)
+        if (rigidbody == null || rigidbody.isKinematic)
         {
             return;
         }
