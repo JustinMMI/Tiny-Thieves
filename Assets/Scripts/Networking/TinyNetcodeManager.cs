@@ -566,6 +566,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                     }
 
                     heldEntityOwners[key] = senderClientId;
+                    remoteEntityTargets.Remove(key);
+                    entityAuthorities.Remove(key);
                     InvokeApplyRemoteHeldState(entity, true);
                     entity.SetPositionAndRotation(position, rotation);
                     BroadcastAuthoritativeEntity(key, entity);
@@ -581,6 +583,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                     }
 
                     heldEntityOwners.Remove(key);
+                    remoteEntityTargets.Remove(key);
+                    entityAuthorities.Remove(key);
                     InvokeApplyAuthoritativeItemRelease(entity, position, rotation, velocity);
                     BroadcastAuthoritativeEntity(key, entity);
                 }
@@ -721,6 +725,13 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
             if (!syncedEntities.TryGetValue(target.Key, out Transform entity) || entity == null)
             {
+                continue;
+            }
+
+            if (networkManager.IsServer && target.Value.Pose.IsHeld && !heldEntityOwners.ContainsKey(target.Key))
+            {
+                expiredTargets ??= new List<string>();
+                expiredTargets.Add(target.Key);
                 continue;
             }
 
