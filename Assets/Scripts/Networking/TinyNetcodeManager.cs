@@ -17,6 +17,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const float RemoteEntitySnapDistance = 0.7f;
     private const float RemoteEntityTargetLifetime = 0.08f;
     private const float EntityAuthorityHoldTime = 0.35f;
+    private const float WagonPushInputTimeout = 0.12f;
     private const string PlayerStateMessage = "TinyPlayerState";
     private const string EntityStateMessage = "TinyEntityState";
     private const string WorldIntentMessage = "TinyWorldIntent";
@@ -30,6 +31,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private readonly Dictionary<string, PoseState> lastSentEntityPoses = new Dictionary<string, PoseState>();
     private readonly Dictionary<string, EntityAuthority> entityAuthorities = new Dictionary<string, EntityAuthority>();
     private readonly Dictionary<string, ulong> heldEntityOwners = new Dictionary<string, ulong>();
+    private readonly Dictionary<ulong, WagonPushState> activeWagonPushes = new Dictionary<ulong, WagonPushState>();
 
     private static TinyNetcodeManager instance;
     private NetworkManager networkManager;
@@ -91,6 +93,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         RegisterMessageHandlers();
         ApplyLocalSkin();
+        ProcessServerWagonPushes();
         SendLocalState();
         UpdateRemotePlayers();
         ApplyRemoteEntityTargets();
@@ -370,7 +373,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private bool SendWagonPushIntent(Transform wagon, float input, Vector3 playerPosition, Quaternion playerRotation)
     {
-        if (Mathf.Abs(input) < 0.01f || !CanSendWorldIntent(wagon, out string key))
+        if (!CanSendWorldIntent(wagon, out string key))
         {
             return false;
         }
@@ -593,10 +596,63 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             case IntentPushWagon:
                 if (IsWagon(entity))
                 {
-                    InvokePushWagonFromNetwork(entity, playerPosition, input, Time.deltaTime);
-                    BroadcastAuthoritativeEntity(key, entity);
+                    activeWagonPushes[senderClientId] = new WagonPushState(
+                        key,
+                        input,
+                        playerPosition,
+                        Time.time + WagonPushInputTimeout);
                 }
                 break;
+        }
+    }
+
+    private void ProcessServerWagonPushes()
+    {
+        if (networkManager == null || !networkManager.IsServer || activeWagonPushes.Count == 0)
+        {
+            return;
+        }
+
+        List<ulong> expiredClients = null;
+        HashSet<string> movedWagons = null;
+        foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
+        {
+            if (Time.time > push.Value.ExpireTime || Mathf.Abs(push.Value.Input) < 0.01f)
+            {
+                expiredClients ??= new List<ulong>();
+                expiredClients.Add(push.Key);
+                continue;
+            }
+
+            if (!syncedEntities.TryGetValue(push.Value.WagonKey, out Transform wagon) || wagon == null || !IsWagon(wagon))
+            {
+                expiredClients ??= new List<ulong>();
+                expiredClients.Add(push.Key);
+                continue;
+            }
+
+            InvokePushWagonFromNetwork(wagon, push.Value.PlayerPosition, push.Value.Input, Time.deltaTime);
+            movedWagons ??= new HashSet<string>();
+            movedWagons.Add(push.Value.WagonKey);
+        }
+
+        if (expiredClients != null)
+        {
+            for (int i = 0; i < expiredClients.Count; i++)
+            {
+                activeWagonPushes.Remove(expiredClients[i]);
+            }
+        }
+
+        if (movedWagons != null)
+        {
+            foreach (string wagonKey in movedWagons)
+            {
+                if (syncedEntities.TryGetValue(wagonKey, out Transform wagon) && wagon != null)
+                {
+                    BroadcastAuthoritativeEntity(wagonKey, wagon);
+                }
+            }
         }
     }
 
@@ -950,6 +1006,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public EntityAuthority(ulong ownerClientId, float expireTime)
         {
             OwnerClientId = ownerClientId;
+            ExpireTime = expireTime;
+        }
+    }
+
+    private readonly struct WagonPushState
+    {
+        public readonly string WagonKey;
+        public readonly float Input;
+        public readonly Vector3 PlayerPosition;
+        public readonly float ExpireTime;
+
+        public WagonPushState(string wagonKey, float input, Vector3 playerPosition, float expireTime)
+        {
+            WagonKey = wagonKey;
+            Input = input;
+            PlayerPosition = playerPosition;
             ExpireTime = expireTime;
         }
     }

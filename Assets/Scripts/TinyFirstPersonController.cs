@@ -852,6 +852,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         if ((Keyboard.current != null && Keyboard.current.eKey.wasPressedThisFrame)
             || (Mouse.current != null && Mouse.current.leftButton.wasPressedThisFrame))
         {
+            if (TinyNetcodeManager.IsClientOnlyActive)
+            {
+                TinyNetcodeManager.TrySendWagonPush(pushingWagon.transform, 0f, transform.position, transform.rotation);
+            }
+
             StopPushingWagon();
             return;
         }
