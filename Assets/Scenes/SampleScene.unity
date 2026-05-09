@@ -1495,17 +1495,17 @@ MonoBehaviour:
   headLookUseCameraWorldRotation: 1
   headLookWorldEulerOffset: {x: 0, y: 0, z: 0}
   driveWalkAnimation: 1
-  idleAnimationClip: {fileID: 0}
+  idleAnimationClip: {fileID: 7400000, guid: 7f528bdb85cd17f42a7fdda04c14b42f, type: 2}
   walkAnimationClip: {fileID: 7400000, guid: 5e4e375b056790243a2beb703ab0334b, type: 2}
-  strafeWalkAnimationClip: {fileID: 0}
-  jumpAnimationClip: {fileID: 0}
+  strafeWalkAnimationClip: {fileID: 7400000, guid: ae4aba49df39b5e4c8cd5396ebb02f3c, type: 2}
+  jumpAnimationClip: {fileID: 7400000, guid: 3cbc205fc275d7b4a9ba7ba9d1c8c3c2, type: 2}
   animatorController: {fileID: 9100000, guid: b777d9413bf17a749b7f4d62781e3cd8, type: 2}
   animatorWalkingBool: IsWalking
   idleAnimationStateName: Idle
   walkAnimationStateName: Walk
   strafeWalkAnimationStateName: StraffWalk
   jumpAnimationStateName: Jump
-  idleAnimationSpeed: 1
+  idleAnimationSpeed: 0.2
   walkAnimationSpeed: 0.15
   walkStopAnimationSpeed: 1
   jumpAnimationSpeed: 1
