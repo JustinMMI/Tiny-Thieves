@@ -1475,7 +1475,7 @@ MonoBehaviour:
   characterModelLocalScale: {x: 0.1, y: 0.1, z: 0.1}
   showCharacterModelInLocalView: 1
   applyCharacterModelOffsetToHitbox: 0
-  selectedSkin: 3
+  selectedSkin: 0
   bodyRendererName: Body
   greenBodyMaterial: {fileID: 2100000, guid: 6cb4b24dc0ef2c84b84659646f0c0eff, type: 2}
   redBodyMaterial: {fileID: 2100000, guid: d2e4169fd63b4614b923b6c385581135, type: 2}
@@ -1505,12 +1505,12 @@ MonoBehaviour:
   walkAnimationStateName: Walk
   strafeWalkAnimationStateName: StraffWalk
   jumpAnimationStateName: Jump
-  idleAnimationSpeed: 0.15
+  idleAnimationSpeed: 0.2
   walkAnimationSpeed: 0.15
   walkStopAnimationSpeed: 1
   jumpAnimationSpeed: 1
   airborneVelocityThreshold: 0.08
-  jumpAnimationEndNormalized: 0.5
+  jumpAnimationEndNormalized: 0.65
   walkAnimationReferenceSpeed: 1.65
   walkLoopStartNormalized: 0.2
   walkLoopEndNormalized: 0.98
@@ -1527,7 +1527,7 @@ MonoBehaviour:
   followSharpness: 18
   limbBobAmount: 0.035
   limbSwingAmount: 0.055
-  jumpHandLift: -0.25
+  jumpHandLift: 0.055
   handGripSharpness: 22
   handGripLift: 0.02
   attachedLeftHandWorldEulerAngles: {x: 180, y: -90, z: 70}
