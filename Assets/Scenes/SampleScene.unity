@@ -1475,7 +1475,7 @@ MonoBehaviour:
   characterModelLocalScale: {x: 0.1, y: 0.1, z: 0.1}
   showCharacterModelInLocalView: 1
   applyCharacterModelOffsetToHitbox: 0
-  selectedSkin: 3
+  selectedSkin: 0
   bodyRendererName: Body
   greenBodyMaterial: {fileID: 2100000, guid: 6cb4b24dc0ef2c84b84659646f0c0eff, type: 2}
   redBodyMaterial: {fileID: 2100000, guid: d2e4169fd63b4614b923b6c385581135, type: 2}
@@ -1495,22 +1495,22 @@ MonoBehaviour:
   headLookUseCameraWorldRotation: 1
   headLookWorldEulerOffset: {x: 0, y: 0, z: 0}
   driveWalkAnimation: 1
-  idleAnimationClip: {fileID: 7400000, guid: 7f528bdb85cd17f42a7fdda04c14b42f, type: 2}
+  idleAnimationClip: {fileID: 0}
   walkAnimationClip: {fileID: 7400000, guid: 5e4e375b056790243a2beb703ab0334b, type: 2}
-  strafeWalkAnimationClip: {fileID: 7400000, guid: ae4aba49df39b5e4c8cd5396ebb02f3c, type: 2}
-  jumpAnimationClip: {fileID: 7400000, guid: 3cbc205fc275d7b4a9ba7ba9d1c8c3c2, type: 2}
+  strafeWalkAnimationClip: {fileID: 0}
+  jumpAnimationClip: {fileID: 0}
   animatorController: {fileID: 9100000, guid: b777d9413bf17a749b7f4d62781e3cd8, type: 2}
   animatorWalkingBool: IsWalking
   idleAnimationStateName: Idle
   walkAnimationStateName: Walk
   strafeWalkAnimationStateName: StraffWalk
   jumpAnimationStateName: Jump
-  idleAnimationSpeed: 0.15
+  idleAnimationSpeed: 1
   walkAnimationSpeed: 0.15
   walkStopAnimationSpeed: 1
   jumpAnimationSpeed: 1
   airborneVelocityThreshold: 0.08
-  jumpAnimationEndNormalized: 0.5
+  jumpAnimationEndNormalized: 0.65
   walkAnimationReferenceSpeed: 1.65
   walkLoopStartNormalized: 0.2
   walkLoopEndNormalized: 0.98
@@ -1527,7 +1527,7 @@ MonoBehaviour:
   followSharpness: 18
   limbBobAmount: 0.035
   limbSwingAmount: 0.055
-  jumpHandLift: -0.25
+  jumpHandLift: 0.055
   handGripSharpness: 22
   handGripLift: 0.02
   attachedLeftHandWorldEulerAngles: {x: 180, y: -90, z: 70}
