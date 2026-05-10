@@ -58,13 +58,12 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     [Header("Head Look")]
     [SerializeField] private bool driveHeadLookWithCamera = true;
-    [SerializeField] private string headLookTransformName = "BonesTête";
+    [SerializeField] private string headLookTransformName = "BonesT\u00EAte";
     [SerializeField] private float headLookPitchInfluence = 0.65f;
     [SerializeField] private float headLookMinPitch = -35f;
     [SerializeField] private float headLookMaxPitch = 45f;
     [SerializeField] private float headLookSharpness = 18f;
-    [SerializeField] private bool headLookUseCameraWorldRotation = true;
-    [SerializeField] private Vector3 headLookWorldEulerOffset = Vector3.zero;
+    [SerializeField] private Vector3 headLookLocalEulerAxis = Vector3.right;
 
     [Header("Character Animation")]
     [SerializeField] private bool driveWalkAnimation = true;
@@ -148,6 +147,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private bool isAirborneAnimationActive;
     private bool isJumpAnimationActive;
     private bool airborneHasLeftGround;
+    private bool remoteAirborneOverride;
+    private bool remoteIsAirborne;
     private float airAnimationTime;
     private MoveAnimationKind currentMoveAnimationKind = MoveAnimationKind.Walk;
     private MoveAnimationKind previousMoveAnimationKind = MoveAnimationKind.Walk;
@@ -158,10 +159,9 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private Quaternion headLookBaseLocalRotation = Quaternion.identity;
     private float targetHeadLookPitch;
     private float currentHeadLookPitch;
-    private Quaternion targetHeadLookWorldRotation = Quaternion.identity;
-    private bool hasHeadLookWorldRotation;
     private bool headLookHasPreferredTarget;
     private bool headLookNeedsAnimatorRefresh;
+    private int jumpSequence;
 
     public Vector3 HitboxLocalOffset => characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
@@ -240,23 +240,56 @@ public sealed class TinyRaymanBody : MonoBehaviour
     public void SetCameraPitch(float cameraPitch)
     {
         targetHeadLookPitch = Mathf.Clamp(cameraPitch * headLookPitchInfluence, headLookMinPitch, headLookMaxPitch);
-        hasHeadLookWorldRotation = false;
     }
 
     public void SetCameraLook(float cameraPitch, Quaternion cameraWorldRotation)
     {
         SetCameraPitch(cameraPitch);
-        targetHeadLookWorldRotation = cameraWorldRotation;
-        hasHeadLookWorldRotation = true;
     }
 
     public void NotifyJump()
+    {
+        jumpSequence++;
+        BeginJumpAnimation();
+    }
+
+    public void ApplyRemoteJumpState(int sequence, bool isAirborne)
+    {
+        if (sequence > jumpSequence)
+        {
+            jumpSequence = sequence;
+            BeginJumpAnimation();
+        }
+
+        if (isAirborne && isAirborneAnimationActive)
+        {
+            remoteAirborneOverride = true;
+            remoteIsAirborne = true;
+            return;
+        }
+
+        if (!isAirborne && remoteAirborneOverride)
+        {
+            remoteIsAirborne = false;
+            remoteAirborneOverride = false;
+            isAirborneAnimationActive = false;
+            isJumpAnimationActive = false;
+            airborneHasLeftGround = false;
+            airAnimationTime = 0f;
+        }
+    }
+
+    public bool IsJumpAirborne => isAirborneAnimationActive;
+
+    private void BeginJumpAnimation()
     {
         isAirborneAnimationActive = true;
         isJumpAnimationActive = true;
         airborneHasLeftGround = false;
         airAnimationTime = 0f;
     }
+
+    public int JumpSequence => jumpSequence;
 
     public void SetSkin(int skinIndex)
     {
@@ -597,9 +630,6 @@ public sealed class TinyRaymanBody : MonoBehaviour
         headLookBaseLocalRotation = headLookTransform != null
             ? headLookTransform.localRotation
             : Quaternion.identity;
-        targetHeadLookWorldRotation = headLookTransform != null
-            ? headLookTransform.rotation
-            : Quaternion.identity;
         currentHeadLookPitch = targetHeadLookPitch;
     }
 
@@ -796,8 +826,9 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     private bool TryPlayAirAnimation(float verticalSpeed, bool isGrounded, float deltaTime)
     {
+        bool effectiveGrounded = remoteAirborneOverride ? !remoteIsAirborne : isGrounded;
         bool shouldBeAirborne = isAirborneAnimationActive;
-        if (!isGrounded)
+        if (!effectiveGrounded)
         {
             airborneHasLeftGround = true;
         }
@@ -807,11 +838,13 @@ public sealed class TinyRaymanBody : MonoBehaviour
             return false;
         }
 
-        if (isGrounded && airborneHasLeftGround && isAirborneAnimationActive)
+        if (effectiveGrounded && airborneHasLeftGround && isAirborneAnimationActive)
         {
             isAirborneAnimationActive = false;
             isJumpAnimationActive = false;
             airborneHasLeftGround = false;
+            remoteAirborneOverride = false;
+            remoteIsAirborne = false;
             airAnimationTime = 0f;
             return false;
         }
@@ -1057,17 +1090,10 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         float follow = 1f - Mathf.Exp(-headLookSharpness * deltaTime);
         currentHeadLookPitch = Mathf.Lerp(currentHeadLookPitch, targetHeadLookPitch, follow);
-        if (headLookUseCameraWorldRotation)
-        {
-            Quaternion targetWorldRotation = hasHeadLookWorldRotation
-                ? targetHeadLookWorldRotation
-                : Quaternion.Euler(currentHeadLookPitch, transform.eulerAngles.y, 0f);
-            targetWorldRotation *= Quaternion.Euler(headLookWorldEulerOffset);
-            headLookTransform.rotation = Quaternion.Slerp(headLookTransform.rotation, targetWorldRotation, follow);
-            return;
-        }
-
-        headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(currentHeadLookPitch, 0f, 0f);
+        Vector3 axis = headLookLocalEulerAxis.sqrMagnitude > 0.0001f
+            ? headLookLocalEulerAxis.normalized
+            : Vector3.right;
+        headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(axis * currentHeadLookPitch);
     }
 
     private static void MoveLocal(Transform target, Vector3 localPosition, float follow)
@@ -1128,7 +1154,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     private static Transform FindPreferredHeadLookTransform(Transform root)
     {
-        Transform target = FindExactTransformByName(root, "BonesTête");
+        Transform target = FindExactTransformByName(root, "BonesT\u00EAte");
         if (target != null)
         {
             return target;

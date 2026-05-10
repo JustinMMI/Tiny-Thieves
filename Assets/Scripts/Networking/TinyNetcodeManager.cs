@@ -6,6 +6,7 @@ using Unity.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 #if TINY_HAS_RELAY
 using Unity.Services.Authentication;
@@ -32,9 +33,13 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const float RemoteEntityTargetLifetime = 0.08f;
     private const float EntityAuthorityHoldTime = 0.35f;
     private const float WagonPushInputTimeout = 0.12f;
+    private const float PingSendInterval = 0.5f;
     private const string PlayerStateMessage = "TinyPlayerState";
     private const string EntityStateMessage = "TinyEntityState";
     private const string WorldIntentMessage = "TinyWorldIntent";
+    private const string PingMessage = "TinyPing";
+    private const string StartGameMessage = "TinyStartGame";
+    private const string LobbyStateMessage = "TinyLobbyState";
     private const byte IntentPickupItem = 1;
     private const byte IntentReleaseItem = 2;
     private const byte IntentPushWagon = 3;
@@ -58,14 +63,29 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private NetworkManager networkManager;
     private UnityTransport transport;
     private Component localPlayer;
+    [SerializeField] private bool autoStartNetwork;
     private float playerSendTimer;
     private float entitySendTimer;
     private float clientRetryTimer;
+    private float pingSendTimer;
+    private float lobbyStateSendTimer;
+    private float displayedPingMs;
     private bool started;
     private bool networkStartInProgress;
     private bool handlersRegistered;
     private bool callbacksRegistered;
     private int appliedLocalSkin = -1;
+    private NetworkStartRole requestedStartRole = NetworkStartRole.None;
+    private string relayJoinCodeOverride;
+    private string currentRelayJoinCode;
+    private int lastKnownLobbyPlayerCount;
+
+    private enum NetworkStartRole
+    {
+        None,
+        Host,
+        Client
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void CreateForScene()
@@ -84,6 +104,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     {
         instance = this;
         EnsureNetworkManager();
+        SceneManager.sceneLoaded += OnSceneLoaded;
     }
 
     private void Start()
@@ -95,7 +116,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         RebuildEntityCache();
-        StartNetworkRole();
+        if (autoStartNetwork)
+        {
+            StartNetworkRole();
+        }
     }
 
     private void Update()
@@ -107,7 +131,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         RefreshSceneReferences();
 
-        if (!IsEditorHost() && !networkManager.IsClient && !networkManager.IsListening)
+        if (!IsEditorHost()
+            && requestedStartRole == NetworkStartRole.Client
+            && !networkManager.IsClient
+            && !networkManager.IsListening)
         {
             RetryClientStart();
             return;
@@ -116,6 +143,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         RegisterMessageHandlers();
         ApplyLocalSkin();
         ProcessServerWagonPushes();
+        UpdatePing();
+        SendLobbyState();
         SendLocalState();
         UpdateRemotePlayers();
         ApplyRemoteEntityTargets();
@@ -128,6 +157,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PlayerStateMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(EntityStateMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(WorldIntentMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PingMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(StartGameMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(LobbyStateMessage);
         }
 
         if (networkManager != null && callbacksRegistered)
@@ -140,6 +172,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         {
             instance = null;
         }
+
+        SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
     public static bool IsClientOnlyActive =>
@@ -152,6 +186,91 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         instance != null
         && instance.networkManager != null
         && instance.networkManager.IsListening;
+
+    public static bool IsHostActive =>
+        instance != null
+        && instance.networkManager != null
+        && instance.networkManager.IsListening
+        && instance.networkManager.IsServer;
+
+    public static bool IsClientConnected =>
+        instance != null
+        && instance.networkManager != null
+        && instance.networkManager.IsListening
+        && (instance.networkManager.IsServer || instance.networkManager.IsConnectedClient);
+
+    public static string CurrentRelayJoinCode => instance != null ? instance.currentRelayJoinCode : string.Empty;
+
+    public static int ConnectedPlayerCount
+    {
+        get
+        {
+            if (instance == null || instance.networkManager == null || !instance.networkManager.IsListening)
+            {
+                return 0;
+            }
+
+            return instance.networkManager.IsServer
+                ? instance.networkManager.ConnectedClientsIds.Count
+                : Mathf.Max(1, instance.lastKnownLobbyPlayerCount);
+        }
+    }
+
+    public static bool IsConnecting =>
+        instance != null
+        && (instance.networkStartInProgress || instance.requestedStartRole == NetworkStartRole.Client)
+        && !IsClientConnected;
+
+    public static void StartHostFromMenu()
+    {
+        if (instance == null)
+        {
+            return;
+        }
+
+        instance.requestedStartRole = NetworkStartRole.Host;
+        instance.relayJoinCodeOverride = null;
+        instance.StartNetworkRole();
+    }
+
+    public static bool StartClientFromMenu(string joinCode)
+    {
+        if (instance == null || string.IsNullOrWhiteSpace(joinCode))
+        {
+            return false;
+        }
+
+        instance.requestedStartRole = NetworkStartRole.Client;
+        instance.relayJoinCodeOverride = joinCode.Trim().ToUpperInvariant();
+        instance.StartNetworkRole();
+        return true;
+    }
+
+    public static void StopFromMenu()
+    {
+        if (instance == null || instance.networkManager == null)
+        {
+            return;
+        }
+
+        instance.networkManager.Shutdown();
+        instance.started = false;
+        instance.networkStartInProgress = false;
+        instance.currentRelayJoinCode = string.Empty;
+        instance.relayJoinCodeOverride = null;
+        instance.requestedStartRole = NetworkStartRole.None;
+    }
+
+    public static void StartGameFromMenu(string sceneName)
+    {
+        if (instance == null)
+        {
+            LoadGameplayScene(sceneName);
+            return;
+        }
+
+        instance.SendStartGame(sceneName);
+    }
 
     public static bool TrySendItemPickup(Transform item)
     {
@@ -234,7 +353,15 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
-        if (IsEditorHost())
+        if (requestedStartRole == NetworkStartRole.Host)
+        {
+            started = await TryStartHostAsync();
+        }
+        else if (requestedStartRole == NetworkStartRole.Client)
+        {
+            started = await TryStartClientAsync();
+        }
+        else if (IsEditorHost())
         {
             started = await TryStartHostAsync();
         }
@@ -283,6 +410,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, RelayConnectionType));
 
                 bool relayOk = networkManager.StartClient();
+                if (relayOk)
+                {
+                    currentRelayJoinCode = joinCode.Trim().ToUpperInvariant();
+                }
+
                 networkStartInProgress = false;
                 Debug.Log(relayOk
                     ? "Tiny Netcode client joining Relay room " + joinCode + "."
@@ -292,6 +424,13 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             catch (Exception exception)
             {
                 networkStartInProgress = false;
+                if (requestedStartRole == NetworkStartRole.Client)
+                {
+                    requestedStartRole = NetworkStartRole.None;
+                    relayJoinCodeOverride = null;
+                    currentRelayJoinCode = string.Empty;
+                }
+
                 Debug.LogWarning("Tiny Relay client failed, will retry.\n" + exception);
                 return false;
             }
@@ -329,6 +468,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 bool relayOk = networkManager.StartHost();
                 if (relayOk)
                 {
+                    currentRelayJoinCode = joinCode.Trim().ToUpperInvariant();
                     WriteRelayJoinCode(joinCode);
                     Debug.Log("Tiny Netcode started as Relay host. Join code: " + joinCode + " (saved to " + GetRelayJoinCodePath() + ")");
                 }
@@ -382,6 +522,29 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         Debug.Log(networkManager.IsServer
             ? "Tiny Netcode client connected to host: " + clientId + " (" + networkManager.ConnectedClientsIds.Count + " connected)"
             : "Tiny Netcode connected to host as client " + clientId + ".");
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        localPlayer = null;
+        appliedLocalSkin = -1;
+        syncedEntities.Clear();
+        remoteEntityTargets.Clear();
+        lastSentEntityPoses.Clear();
+        entityAuthorities.Clear();
+        heldEntityOwners.Clear();
+        activeWagonPushes.Clear();
+
+        foreach (RemotePlayer remotePlayer in remotePlayers.Values)
+        {
+            if (remotePlayer.Transform != null)
+            {
+                Destroy(remotePlayer.Transform.gameObject);
+            }
+        }
+
+        remotePlayers.Clear();
+        RefreshSceneReferences();
     }
 
 #if TINY_HAS_RELAY
@@ -442,6 +605,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         if (!string.IsNullOrWhiteSpace(fromArgs))
         {
             return fromArgs.Trim().ToUpperInvariant();
+        }
+
+        if (instance != null && !string.IsNullOrWhiteSpace(instance.relayJoinCodeOverride))
+        {
+            return instance.relayJoinCodeOverride.Trim().ToUpperInvariant();
         }
 
         foreach (string path in GetRelayJoinCodePaths())
@@ -545,6 +713,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PlayerStateMessage, OnPlayerStateMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(EntityStateMessage, OnEntityStateMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(WorldIntentMessage, OnWorldIntentMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PingMessage, OnPingMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(StartGameMessage, OnStartGameMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(LobbyStateMessage, OnLobbyStateMessage);
         handlersRegistered = true;
     }
 
@@ -605,15 +776,23 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void SendPlayerState()
     {
-        using FastBufferWriter writer = new FastBufferWriter(768, Allocator.Temp);
+        using FastBufferWriter writer = new FastBufferWriter(1024, Allocator.Temp);
         Transform playerTransform = localPlayer.transform;
+        Component body = localPlayer.GetComponent("TinyRaymanBody");
         int skinIndex = GetLocalSkinIndex();
-        HandPoseState handPose = GetHandPose(localPlayer.GetComponent("TinyRaymanBody"));
+        float pitch = GetCurrentPitch(localPlayer);
+        Quaternion cameraRotation = GetCurrentCameraRotation(localPlayer, playerTransform);
+        int jumpSequence = GetJumpSequence(body);
+        bool jumpAirborne = GetJumpAirborne(body);
+        HandPoseState handPose = GetHandPose(body);
         HeldEntityState heldEntity = GetHeldEntityState(localPlayer);
         writer.WriteValueSafe(networkManager.LocalClientId);
         writer.WriteValueSafe(playerTransform.position);
         writer.WriteValueSafe(playerTransform.rotation);
-        writer.WriteValueSafe(GetCurrentPitch(localPlayer));
+        writer.WriteValueSafe(pitch);
+        writer.WriteValueSafe(cameraRotation);
+        writer.WriteValueSafe(jumpSequence);
+        writer.WriteValueSafe(jumpAirborne);
         writer.WriteValueSafe(skinIndex);
         WriteHandPose(writer, handPose);
         WriteHeldEntityState(writer, heldEntity);
@@ -790,10 +969,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void OnPlayerStateMessage(ulong senderClientId, FastBufferReader reader)
     {
+        if (localPlayer == null)
+        {
+            RefreshSceneReferences();
+            if (localPlayer == null)
+            {
+                return;
+            }
+        }
+
         reader.ReadValueSafe(out ulong ownerClientId);
         reader.ReadValueSafe(out Vector3 position);
         reader.ReadValueSafe(out Quaternion rotation);
         reader.ReadValueSafe(out float pitch);
+        reader.ReadValueSafe(out Quaternion cameraRotation);
+        reader.ReadValueSafe(out int jumpSequence);
+        reader.ReadValueSafe(out bool jumpAirborne);
         reader.ReadValueSafe(out int skinIndex);
         HandPoseState handPose = ReadHandPose(reader);
         HeldEntityState heldEntity = ReadHeldEntityState(reader);
@@ -806,7 +997,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         if (networkManager.IsServer)
         {
             heldEntity = GetServerApprovedHeldEntity(senderClientId, heldEntity);
-            RelayPlayerPayload(senderClientId, ownerClientId, position, rotation, pitch, skinIndex, handPose, heldEntity);
+            RelayPlayerPayload(senderClientId, ownerClientId, position, rotation, pitch, cameraRotation, jumpSequence, jumpAirborne, skinIndex, handPose, heldEntity);
         }
 
         ApplyHeldEntityPayload(senderClientId, heldEntity);
@@ -824,6 +1015,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         remotePlayer.TargetPosition = position;
         remotePlayer.TargetRotation = rotation;
         remotePlayer.TargetPitch = pitch;
+        remotePlayer.TargetCameraRotation = cameraRotation;
+        remotePlayer.TargetJumpSequence = jumpSequence;
+        remotePlayer.TargetJumpAirborne = jumpAirborne;
         remotePlayer.TargetHands = handPose;
         remotePlayer.TargetHeldEntityKey = heldEntity.HasEntity ? heldEntity.Key : null;
         remotePlayer.ApplySkin(skinIndex);
@@ -835,15 +1029,21 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         Vector3 position,
         Quaternion rotation,
         float pitch,
+        Quaternion cameraRotation,
+        int jumpSequence,
+        bool jumpAirborne,
         int skinIndex,
         HandPoseState handPose,
         HeldEntityState heldEntity)
     {
-        using FastBufferWriter writer = new FastBufferWriter(768, Allocator.Temp);
+        using FastBufferWriter writer = new FastBufferWriter(1024, Allocator.Temp);
         writer.WriteValueSafe(ownerClientId);
         writer.WriteValueSafe(position);
         writer.WriteValueSafe(rotation);
         writer.WriteValueSafe(pitch);
+        writer.WriteValueSafe(cameraRotation);
+        writer.WriteValueSafe(jumpSequence);
+        writer.WriteValueSafe(jumpAirborne);
         writer.WriteValueSafe(skinIndex);
         WriteHandPose(writer, handPose);
         WriteHeldEntityState(writer, heldEntity);
@@ -1000,6 +1200,151 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 }
                 break;
         }
+    }
+
+    private void SendLobbyState()
+    {
+        if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        lobbyStateSendTimer -= Time.deltaTime;
+        if (lobbyStateSendTimer > 0f)
+        {
+            return;
+        }
+
+        lobbyStateSendTimer = 0.25f;
+        int playerCount = networkManager.ConnectedClientsIds.Count;
+        lastKnownLobbyPlayerCount = playerCount;
+        using FastBufferWriter writer = new FastBufferWriter(64, Allocator.Temp);
+        writer.WriteValueSafe(playerCount);
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            if (clientId != networkManager.LocalClientId)
+            {
+                networkManager.CustomMessagingManager.SendNamedMessage(LobbyStateMessage, clientId, writer, NetworkDelivery.UnreliableSequenced);
+            }
+        }
+    }
+
+    private void OnLobbyStateMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out int playerCount);
+        lastKnownLobbyPlayerCount = Mathf.Clamp(playerCount, 1, 4);
+    }
+
+    private void UpdatePing()
+    {
+        if (networkManager == null || networkManager.CustomMessagingManager == null || !networkManager.IsListening)
+        {
+            return;
+        }
+
+        if (networkManager.IsServer)
+        {
+            displayedPingMs = 0f;
+            return;
+        }
+
+        if (!networkManager.IsConnectedClient)
+        {
+            return;
+        }
+
+        pingSendTimer -= Time.deltaTime;
+        if (pingSendTimer > 0f)
+        {
+            return;
+        }
+
+        pingSendTimer = PingSendInterval;
+        using FastBufferWriter writer = new FastBufferWriter(32, Allocator.Temp);
+        writer.WriteValueSafe(false);
+        writer.WriteValueSafe(Time.realtimeSinceStartup);
+        networkManager.CustomMessagingManager.SendNamedMessage(PingMessage, NetworkManager.ServerClientId, writer, NetworkDelivery.Unreliable);
+    }
+
+    private void OnPingMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out bool isReply);
+        reader.ReadValueSafe(out float sentTime);
+
+        if (networkManager == null || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        if (networkManager.IsServer && !isReply)
+        {
+            using FastBufferWriter writer = new FastBufferWriter(32, Allocator.Temp);
+            writer.WriteValueSafe(true);
+            writer.WriteValueSafe(sentTime);
+            networkManager.CustomMessagingManager.SendNamedMessage(PingMessage, senderClientId, writer, NetworkDelivery.Unreliable);
+            return;
+        }
+
+        if (!networkManager.IsServer && isReply)
+        {
+            displayedPingMs = Mathf.Max(0f, (Time.realtimeSinceStartup - sentTime) * 1000f);
+        }
+    }
+
+    private void SendStartGame(string sceneName)
+    {
+        string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
+        if (networkManager != null
+            && networkManager.IsListening
+            && networkManager.IsServer
+            && networkManager.CustomMessagingManager != null)
+        {
+            using FastBufferWriter writer = new FastBufferWriter(128, Allocator.Temp);
+            FixedString128Bytes fixedSceneName = targetScene;
+            writer.WriteValueSafe(fixedSceneName);
+
+            foreach (ulong clientId in networkManager.ConnectedClientsIds)
+            {
+                if (clientId != networkManager.LocalClientId)
+                {
+                    networkManager.CustomMessagingManager.SendNamedMessage(StartGameMessage, clientId, writer, NetworkDelivery.ReliableSequenced);
+                }
+            }
+        }
+
+        LoadGameplayScene(targetScene);
+    }
+
+    private void OnStartGameMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out FixedString128Bytes fixedSceneName);
+        LoadGameplayScene(fixedSceneName.ToString());
+    }
+
+    private static void LoadGameplayScene(string sceneName)
+    {
+        string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
+        if (SceneManager.GetActiveScene().name == targetScene)
+        {
+            return;
+        }
+
+        SceneManager.LoadScene(targetScene);
+    }
+
+    private void OnGUI()
+    {
+        if (networkManager == null || !networkManager.IsListening)
+        {
+            return;
+        }
+
+        string text = networkManager.IsServer
+            ? "Ping: host"
+            : "Ping: " + Mathf.RoundToInt(displayedPingMs) + " ms";
+        GUIStyle style = GUI.skin.label;
+        Vector2 size = style.CalcSize(new GUIContent(text));
+        GUI.Label(new Rect(Screen.width - size.x - 16f, 12f, size.x + 4f, 24f), text);
     }
 
     private void ProcessServerWagonPushes()
@@ -1224,7 +1569,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
             remotePlayer.Transform.position = Vector3.Lerp(remotePlayer.Transform.position, remotePlayer.TargetPosition, follow);
             remotePlayer.Transform.rotation = Quaternion.Slerp(remotePlayer.Transform.rotation, remotePlayer.TargetRotation, follow);
-            remotePlayer.ApplyPitch();
+            remotePlayer.ApplyLookAndJump();
             remotePlayer.ApplyHands(syncedEntities);
         }
     }
@@ -1574,8 +1919,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public Vector3 TargetPosition;
         public Quaternion TargetRotation;
         public float TargetPitch;
+        public Quaternion TargetCameraRotation;
+        public int TargetJumpSequence;
+        public bool TargetJumpAirborne;
         public HandPoseState TargetHands;
         public string TargetHeldEntityKey;
+        private int appliedJumpSequence;
 
         public RemotePlayer(Transform transform)
         {
@@ -1594,11 +1943,20 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             InvokeSetSkin(body, skinIndex);
         }
 
-        public void ApplyPitch()
+        public void ApplyLookAndJump()
         {
             if (body != null)
             {
                 InvokeSetCameraPitch(body, TargetPitch);
+                if (TargetJumpSequence > appliedJumpSequence)
+                {
+                    appliedJumpSequence = TargetJumpSequence;
+                }
+
+                if (appliedJumpSequence > 0)
+                {
+                    InvokeApplyRemoteJumpState(body, appliedJumpSequence, TargetJumpAirborne);
+                }
             }
         }
 
@@ -1677,6 +2035,28 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         object value = controller.GetType().GetProperty("CurrentPitch")?.GetValue(controller);
         return value is float pitch ? pitch : 0f;
+    }
+
+    private static Quaternion GetCurrentCameraRotation(Component controller, Transform fallback)
+    {
+        object value = controller?.GetType().GetProperty("CurrentCameraWorldRotation")?.GetValue(controller);
+        return value is Quaternion rotation
+            ? rotation
+            : fallback != null
+                ? fallback.rotation
+                : Quaternion.identity;
+    }
+
+    private static int GetJumpSequence(Component body)
+    {
+        object value = body?.GetType().GetProperty("JumpSequence")?.GetValue(body);
+        return value is int sequence ? sequence : 0;
+    }
+
+    private static bool GetJumpAirborne(Component body)
+    {
+        object value = body?.GetType().GetProperty("IsJumpAirborne")?.GetValue(body);
+        return value is bool isAirborne && isAirborne;
     }
 
     private static HandPoseState GetHandPose(Component body)
@@ -1966,6 +2346,38 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private static void InvokeSetCameraPitch(Component body, float pitch)
     {
         body?.GetType().GetMethod("SetCameraPitch")?.Invoke(body, new object[] { pitch });
+    }
+
+    private static void InvokeSetCameraLook(Component body, float pitch, Quaternion cameraRotation)
+    {
+        var method = body?.GetType().GetMethod("SetCameraLook", new[] { typeof(float), typeof(Quaternion) });
+        if (method != null)
+        {
+            method.Invoke(body, new object[] { pitch, cameraRotation });
+            return;
+        }
+
+        InvokeSetCameraPitch(body, pitch);
+    }
+
+    private static void InvokeNotifyJump(Component body)
+    {
+        body?.GetType().GetMethod("NotifyJump")?.Invoke(body, Array.Empty<object>());
+    }
+
+    private static void InvokeApplyRemoteJumpState(Component body, int sequence, bool isAirborne)
+    {
+        var method = body?.GetType().GetMethod("ApplyRemoteJumpState", new[] { typeof(int), typeof(bool) });
+        if (method != null)
+        {
+            method.Invoke(body, new object[] { sequence, isAirborne });
+            return;
+        }
+
+        if (isAirborne)
+        {
+            InvokeNotifyJump(body);
+        }
     }
 
     private static void InvokeApplyRemoteHandPoses(Component body, HandPoseState handPose)

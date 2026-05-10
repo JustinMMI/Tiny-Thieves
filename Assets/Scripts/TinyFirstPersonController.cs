@@ -97,6 +97,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private TinyRailWagon pushingWagon;
 
     public float CurrentPitch => pitch;
+    public Quaternion CurrentCameraWorldRotation => cameraPivot != null ? cameraPivot.rotation : transform.rotation;
     public Transform HeldItemTransform => heldItem != null ? heldItem.transform : null;
 
     private void Awake()
