@@ -40,6 +40,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const string PingMessage = "TinyPing";
     private const string StartGameMessage = "TinyStartGame";
     private const string LobbyStateMessage = "TinyLobbyState";
+    private const string SkinRequestMessage = "TinySkinRequest";
+    private const int SkinCount = 4;
     private const byte IntentPickupItem = 1;
     private const byte IntentReleaseItem = 2;
     private const byte IntentPushWagon = 3;
@@ -58,6 +60,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private readonly Dictionary<string, EntityAuthority> entityAuthorities = new Dictionary<string, EntityAuthority>();
     private readonly Dictionary<string, ulong> heldEntityOwners = new Dictionary<string, ulong>();
     private readonly Dictionary<ulong, WagonPushState> activeWagonPushes = new Dictionary<ulong, WagonPushState>();
+    private readonly List<ulong> lobbyClientOrder = new List<ulong>();
+    private readonly Dictionary<ulong, int> lobbySkinAssignments = new Dictionary<ulong, int>();
 
     private static TinyNetcodeManager instance;
     private NetworkManager networkManager;
@@ -79,6 +83,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private string relayJoinCodeOverride;
     private string currentRelayJoinCode;
     private int lastKnownLobbyPlayerCount;
+    private int localSelectedSkin = -1;
 
     private enum NetworkStartRole
     {
@@ -160,6 +165,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PingMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(StartGameMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(LobbyStateMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(SkinRequestMessage);
         }
 
         if (networkManager != null && callbacksRegistered)
@@ -211,7 +217,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             }
 
             return instance.networkManager.IsServer
-                ? instance.networkManager.ConnectedClientsIds.Count
+                ? Mathf.Max(instance.networkManager.ConnectedClientsIds.Count, instance.lobbyClientOrder.Count)
                 : Mathf.Max(1, instance.lastKnownLobbyPlayerCount);
         }
     }
@@ -220,6 +226,30 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         instance != null
         && (instance.networkStartInProgress || instance.requestedStartRole == NetworkStartRole.Client)
         && !IsClientConnected;
+
+    public static int LocalEquippedSkinIndex => instance != null ? instance.GetLocalAssignedSkin() : -1;
+
+    public static int SkinOptionCount => SkinCount;
+
+    public static int GetLobbySkinBySlot(int slot)
+    {
+        return instance != null ? instance.GetLobbySkinBySlotInternal(slot) : -1;
+    }
+
+    public static bool IsSkinTakenByOther(int skinIndex)
+    {
+        return instance != null && instance.IsSkinTakenByOtherInternal(skinIndex);
+    }
+
+    public static bool RequestSkinFromMenu(int skinIndex)
+    {
+        if (instance == null)
+        {
+            return false;
+        }
+
+        return instance.RequestSkinInternal(skinIndex);
+    }
 
     public static void StartHostFromMenu()
     {
@@ -230,6 +260,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         instance.requestedStartRole = NetworkStartRole.Host;
         instance.relayJoinCodeOverride = null;
+        instance.ResetLobbyState();
         instance.StartNetworkRole();
     }
 
@@ -242,6 +273,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         instance.requestedStartRole = NetworkStartRole.Client;
         instance.relayJoinCodeOverride = joinCode.Trim().ToUpperInvariant();
+        instance.ResetLobbyState();
         instance.StartNetworkRole();
         return true;
     }
@@ -259,6 +291,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         instance.currentRelayJoinCode = string.Empty;
         instance.relayJoinCodeOverride = null;
         instance.requestedStartRole = NetworkStartRole.None;
+        instance.ResetLobbyState();
     }
 
     public static void StartGameFromMenu(string sceneName)
@@ -468,6 +501,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 bool relayOk = networkManager.StartHost();
                 if (relayOk)
                 {
+                    EnsureLobbyClient(networkManager.LocalClientId);
+                    BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
                     currentRelayJoinCode = joinCode.Trim().ToUpperInvariant();
                     WriteRelayJoinCode(joinCode);
                     Debug.Log("Tiny Netcode started as Relay host. Join code: " + joinCode + " (saved to " + GetRelayJoinCodePath() + ")");
@@ -489,6 +524,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         transport.SetConnectionData(Localhost, Port, Localhost);
         bool ok = networkManager.StartHost();
+        if (ok)
+        {
+            EnsureLobbyClient(networkManager.LocalClientId);
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        }
+
         networkStartInProgress = false;
         Debug.Log(ok ? "Tiny Netcode started as Editor host on " + Localhost + ":" + Port + "." : "Tiny Netcode host failed to start.");
         return ok;
@@ -497,6 +538,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void OnClientDisconnect(ulong clientId)
     {
         activeWagonPushes.Remove(clientId);
+        if (networkManager != null && networkManager.IsServer)
+        {
+            RemoveLobbyClient(clientId);
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        }
 
         if (IsEditorHost() || networkManager == null || clientId != networkManager.LocalClientId)
         {
@@ -509,6 +555,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         networkStartInProgress = false;
         handlersRegistered = false;
         clientRetryTimer = 0f;
+        ResetLobbyState();
         Debug.Log("Tiny Netcode client disconnected, waiting for host...");
     }
 
@@ -522,6 +569,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         Debug.Log(networkManager.IsServer
             ? "Tiny Netcode client connected to host: " + clientId + " (" + networkManager.ConnectedClientsIds.Count + " connected)"
             : "Tiny Netcode connected to host as client " + clientId + ".");
+
+        if (networkManager.IsServer)
+        {
+            EnsureLobbyClient(clientId);
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        }
     }
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -716,6 +769,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PingMessage, OnPingMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(StartGameMessage, OnStartGameMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(LobbyStateMessage, OnLobbyStateMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(SkinRequestMessage, OnSkinRequestMessage);
         handlersRegistered = true;
     }
 
@@ -1216,23 +1270,255 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         lobbyStateSendTimer = 0.25f;
-        int playerCount = networkManager.ConnectedClientsIds.Count;
-        lastKnownLobbyPlayerCount = playerCount;
-        using FastBufferWriter writer = new FastBufferWriter(64, Allocator.Temp);
-        writer.WriteValueSafe(playerCount);
         foreach (ulong clientId in networkManager.ConnectedClientsIds)
         {
-            if (clientId != networkManager.LocalClientId)
-            {
-                networkManager.CustomMessagingManager.SendNamedMessage(LobbyStateMessage, clientId, writer, NetworkDelivery.UnreliableSequenced);
-            }
+            EnsureLobbyClient(clientId);
         }
+
+        BroadcastLobbyState(NetworkDelivery.UnreliableSequenced);
     }
 
     private void OnLobbyStateMessage(ulong senderClientId, FastBufferReader reader)
     {
+        ReadLobbyState(reader);
+    }
+
+    private void BroadcastLobbyState(NetworkDelivery delivery)
+    {
+        if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        lastKnownLobbyPlayerCount = Mathf.Clamp(lobbyClientOrder.Count, 1, SkinCount);
+        using FastBufferWriter writer = new FastBufferWriter(256, Allocator.Temp);
+        WriteLobbyState(writer);
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            if (clientId != networkManager.LocalClientId)
+            {
+                networkManager.CustomMessagingManager.SendNamedMessage(LobbyStateMessage, clientId, writer, delivery);
+            }
+        }
+    }
+
+    private void WriteLobbyState(FastBufferWriter writer)
+    {
+        int count = Mathf.Min(lobbyClientOrder.Count, SkinCount);
+        writer.WriteValueSafe(count);
+        for (int i = 0; i < count; i++)
+        {
+            ulong clientId = lobbyClientOrder[i];
+            int skinIndex = lobbySkinAssignments.TryGetValue(clientId, out int assignedSkin) ? assignedSkin : -1;
+            writer.WriteValueSafe(clientId);
+            writer.WriteValueSafe(skinIndex);
+        }
+    }
+
+    private void ReadLobbyState(FastBufferReader reader)
+    {
         reader.ReadValueSafe(out int playerCount);
-        lastKnownLobbyPlayerCount = Mathf.Clamp(playerCount, 1, 4);
+        int count = Mathf.Clamp(playerCount, 0, SkinCount);
+        lobbyClientOrder.Clear();
+        lobbySkinAssignments.Clear();
+
+        for (int i = 0; i < count; i++)
+        {
+            reader.ReadValueSafe(out ulong clientId);
+            reader.ReadValueSafe(out int skinIndex);
+            lobbyClientOrder.Add(clientId);
+            lobbySkinAssignments[clientId] = skinIndex;
+            if (networkManager != null && clientId == networkManager.LocalClientId && skinIndex >= 0)
+            {
+                localSelectedSkin = Mathf.Clamp(skinIndex, 0, SkinCount - 1);
+            }
+        }
+
+        lastKnownLobbyPlayerCount = Mathf.Clamp(count, 1, SkinCount);
+    }
+
+    private void EnsureLobbyClient(ulong clientId)
+    {
+        if (!lobbyClientOrder.Contains(clientId))
+        {
+            lobbyClientOrder.Add(clientId);
+        }
+
+        if (!lobbySkinAssignments.ContainsKey(clientId))
+        {
+            lobbySkinAssignments[clientId] = -1;
+        }
+    }
+
+    private void RemoveLobbyClient(ulong clientId)
+    {
+        lobbyClientOrder.Remove(clientId);
+        lobbySkinAssignments.Remove(clientId);
+        lastKnownLobbyPlayerCount = Mathf.Clamp(lobbyClientOrder.Count, 0, SkinCount);
+    }
+
+    private void ResetLobbyState()
+    {
+        lobbyClientOrder.Clear();
+        lobbySkinAssignments.Clear();
+        lastKnownLobbyPlayerCount = 0;
+        localSelectedSkin = -1;
+    }
+
+    private int GetLobbySkinBySlotInternal(int slot)
+    {
+        if (slot < 0 || slot >= lobbyClientOrder.Count)
+        {
+            return -1;
+        }
+
+        ulong clientId = lobbyClientOrder[slot];
+        return lobbySkinAssignments.TryGetValue(clientId, out int skinIndex) ? skinIndex : -1;
+    }
+
+    private int GetLocalAssignedSkin()
+    {
+        if (networkManager != null && lobbySkinAssignments.TryGetValue(networkManager.LocalClientId, out int skinIndex))
+        {
+            return skinIndex;
+        }
+
+        return localSelectedSkin;
+    }
+
+    private bool IsSkinTakenByOtherInternal(int skinIndex)
+    {
+        if (skinIndex < 0 || skinIndex >= SkinCount)
+        {
+            return false;
+        }
+
+        ulong localClientId = networkManager != null ? networkManager.LocalClientId : ulong.MaxValue;
+        foreach (KeyValuePair<ulong, int> assignment in lobbySkinAssignments)
+        {
+            if (assignment.Value == skinIndex && assignment.Key != localClientId)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool RequestSkinInternal(int skinIndex)
+    {
+        int clampedSkin = Mathf.Clamp(skinIndex, 0, SkinCount - 1);
+        if (networkManager == null || !networkManager.IsListening)
+        {
+            localSelectedSkin = clampedSkin;
+            return true;
+        }
+
+        if (networkManager.IsServer)
+        {
+            return TryAssignSkin(networkManager.LocalClientId, clampedSkin);
+        }
+
+        if (!networkManager.IsConnectedClient || networkManager.CustomMessagingManager == null)
+        {
+            return false;
+        }
+
+        using FastBufferWriter writer = new FastBufferWriter(16, Allocator.Temp);
+        writer.WriteValueSafe(clampedSkin);
+        networkManager.CustomMessagingManager.SendNamedMessage(SkinRequestMessage, NetworkManager.ServerClientId, writer, NetworkDelivery.ReliableSequenced);
+        return true;
+    }
+
+    private void OnSkinRequestMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        if (networkManager == null || !networkManager.IsServer)
+        {
+            return;
+        }
+
+        reader.ReadValueSafe(out int skinIndex);
+        TryAssignSkin(senderClientId, skinIndex);
+    }
+
+    private bool TryAssignSkin(ulong clientId, int skinIndex)
+    {
+        int clampedSkin = Mathf.Clamp(skinIndex, 0, SkinCount - 1);
+        EnsureLobbyClient(clientId);
+        foreach (KeyValuePair<ulong, int> assignment in lobbySkinAssignments)
+        {
+            if (assignment.Key != clientId && assignment.Value == clampedSkin)
+            {
+                return false;
+            }
+        }
+
+        lobbySkinAssignments[clientId] = clampedSkin;
+        if (networkManager != null && clientId == networkManager.LocalClientId)
+        {
+            localSelectedSkin = clampedSkin;
+            appliedLocalSkin = -1;
+        }
+
+        BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        return true;
+    }
+
+    private void AssignMissingSkins()
+    {
+        if (networkManager == null || !networkManager.IsServer)
+        {
+            return;
+        }
+
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            EnsureLobbyClient(clientId);
+        }
+
+        List<int> availableSkins = new List<int>();
+        for (int skin = 0; skin < SkinCount; skin++)
+        {
+            bool taken = false;
+            foreach (int assignedSkin in lobbySkinAssignments.Values)
+            {
+                if (assignedSkin == skin)
+                {
+                    taken = true;
+                    break;
+                }
+            }
+
+            if (!taken)
+            {
+                availableSkins.Add(skin);
+            }
+        }
+
+        for (int i = 0; i < lobbyClientOrder.Count; i++)
+        {
+            ulong clientId = lobbyClientOrder[i];
+            if (lobbySkinAssignments.TryGetValue(clientId, out int assignedSkin) && assignedSkin >= 0)
+            {
+                continue;
+            }
+
+            if (availableSkins.Count == 0)
+            {
+                lobbySkinAssignments[clientId] = Mathf.Clamp(i, 0, SkinCount - 1);
+                continue;
+            }
+
+            int randomIndex = UnityEngine.Random.Range(0, availableSkins.Count);
+            lobbySkinAssignments[clientId] = availableSkins[randomIndex];
+            availableSkins.RemoveAt(randomIndex);
+        }
+
+        if (networkManager != null && lobbySkinAssignments.TryGetValue(networkManager.LocalClientId, out int localSkin))
+        {
+            localSelectedSkin = localSkin;
+            appliedLocalSkin = -1;
+        }
     }
 
     private void UpdatePing()
@@ -1299,9 +1585,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             && networkManager.IsServer
             && networkManager.CustomMessagingManager != null)
         {
-            using FastBufferWriter writer = new FastBufferWriter(128, Allocator.Temp);
+            AssignMissingSkins();
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+            using FastBufferWriter writer = new FastBufferWriter(512, Allocator.Temp);
             FixedString128Bytes fixedSceneName = targetScene;
             writer.WriteValueSafe(fixedSceneName);
+            WriteLobbyState(writer);
 
             foreach (ulong clientId in networkManager.ConnectedClientsIds)
             {
@@ -1318,6 +1607,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void OnStartGameMessage(ulong senderClientId, FastBufferReader reader)
     {
         reader.ReadValueSafe(out FixedString128Bytes fixedSceneName);
+        ReadLobbyState(reader);
         LoadGameplayScene(fixedSceneName.ToString());
     }
 
@@ -1732,12 +2022,18 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private int GetLocalSkinIndex()
     {
-        if (IsEditorHost() || networkManager == null)
+        int assignedSkin = GetLocalAssignedSkin();
+        if (assignedSkin >= 0)
+        {
+            return Mathf.Clamp(assignedSkin, 0, SkinCount - 1);
+        }
+
+        if (networkManager == null)
         {
             return 0;
         }
 
-        return Mathf.Clamp((int)networkManager.LocalClientId, 1, 3);
+        return IsEditorHost() ? 0 : Mathf.Clamp((int)networkManager.LocalClientId, 1, SkinCount - 1);
     }
 
     private void ApplyLocalSkin()

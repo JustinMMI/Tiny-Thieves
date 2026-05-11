@@ -25,6 +25,7 @@ public sealed class ClimbZone : MonoBehaviour
     [SerializeField] private bool requirePlayerBelowLanding = true;
 
     [Header("Hands")]
+    [SerializeField] private float rotatedPlatformHandForwardOffset = 0.12f;
     [SerializeField] private Vector3 leftHandLocalEulerAngles = Vector3.zero;
     [SerializeField] private Vector3 rightHandLocalEulerAngles = Vector3.zero;
 
@@ -108,6 +109,7 @@ public sealed class ClimbZone : MonoBehaviour
         maxClimbHeight = Mathf.Max(minClimbHeight, maxClimbHeight);
         edgePadding = Mathf.Max(0f, edgePadding);
         landingForwardOffset = Mathf.Max(0f, landingForwardOffset);
+        rotatedPlatformHandForwardOffset = Mathf.Max(0f, rotatedPlatformHandForwardOffset);
         activationPadding = Mathf.Max(0f, activationPadding);
     }
 
@@ -173,6 +175,16 @@ public sealed class ClimbZone : MonoBehaviour
         }
 
         GetHandAnchors(landingBounds, landingPosition, climbDirection, padding, out Vector3 leftHandAnchor, out Vector3 rightHandAnchor);
+        BoxCollider handReference = landingZoneOverride != null && landingZoneOverride.enabled
+            ? landingZoneOverride
+            : volume;
+        if (IsRotated(handReference) && climbDirection.sqrMagnitude > 0.0001f)
+        {
+            Vector3 correction = climbDirection.normalized * rotatedPlatformHandForwardOffset;
+            leftHandAnchor += correction;
+            rightHandAnchor += correction;
+        }
+
         GetHandRotations(climbDirection, out Quaternion leftHandRotation, out Quaternion rightHandRotation);
         route = new Route(grabPosition, landingPosition, leftHandAnchor, rightHandAnchor, leftHandRotation, rightHandRotation);
         return true;
@@ -291,6 +303,25 @@ public sealed class ClimbZone : MonoBehaviour
             Mathf.Clamp(position.x, minX, maxX),
             bounds.max.y,
             Mathf.Clamp(position.z, minZ, maxZ));
+    }
+
+    private static bool IsRotated(BoxCollider box)
+    {
+        if (box == null)
+        {
+            return false;
+        }
+
+        Vector3 euler = box.transform.rotation.eulerAngles;
+        return !ApproximatelyZeroAngle(euler.x)
+            || !ApproximatelyZeroAngle(euler.y)
+            || !ApproximatelyZeroAngle(euler.z);
+    }
+
+    private static bool ApproximatelyZeroAngle(float angle)
+    {
+        float normalized = Mathf.Abs(Mathf.DeltaAngle(0f, angle));
+        return normalized < 0.1f;
     }
 
     private void OnDrawGizmosSelected()
