@@ -13,6 +13,8 @@ public sealed class TinyItem : MonoBehaviour
     [SerializeField] private Vector3 holdLocalPosition = Vector3.zero;
     [SerializeField] private Vector3 holdLocalEulerAngles = Vector3.zero;
     [SerializeField, Range(0.05f, 0.45f)] private float handAnchorWidth = 0.18f;
+    [SerializeField, InspectorName("Main gauche active")] private bool leftHandActive = true;
+    [SerializeField, InspectorName("Main droite active")] private bool rightHandActive = true;
     [SerializeField] private Vector3 leftHandGripLocalOffset = Vector3.zero;
     [SerializeField] private Vector3 rightHandGripLocalOffset = Vector3.zero;
     [SerializeField] private Vector3 leftHandGripEulerAngles = Vector3.zero;
@@ -37,6 +39,8 @@ public sealed class TinyItem : MonoBehaviour
     public string ItemName => itemName;
     public float WeightKilograms => weightKilograms;
     public int Value => value;
+    public bool LeftHandActive => leftHandActive;
+    public bool RightHandActive => rightHandActive;
     public bool IsHeld { get; private set; }
     public bool IsNetworkHeld => IsHeld || isRemoteHeld;
 

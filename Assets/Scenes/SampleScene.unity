@@ -751,6 +751,7 @@ MonoBehaviour:
   climbLiftHeight: 0.05
   climbCameraPull: 0.035
   climbLookInfluence: 0.65
+  oneHandItemClimbSpeedMultiplier: 0.6
   maxClimbFacingAngle: 90
   landingClearanceMask:
     serializedVersion: 2
@@ -1562,13 +1563,15 @@ MonoBehaviour:
   itemName: Objet de Test 2
   weightKilograms: 5
   value: 200
-  holdLocalPosition: {x: -0.07, y: -0.02, z: -0.36}
+  holdLocalPosition: {x: -0.15, y: -0.02, z: -0.24}
   holdLocalEulerAngles: {x: -22.3, y: 0, z: 0}
   handAnchorWidth: 0.05
-  leftHandGripLocalOffset: {x: 0, y: 0, z: 0}
-  rightHandGripLocalOffset: {x: 0, y: 0, z: 0}
-  leftHandGripEulerAngles: {x: -160, y: 0, z: 0}
-  rightHandGripEulerAngles: {x: -160, y: 0, z: 0}
+  leftHandActive: 1
+  rightHandActive: 0
+  leftHandGripLocalOffset: {x: 0.19, y: 0.56, z: 0.04}
+  rightHandGripLocalOffset: {x: 0.93, y: -0.47, z: -0.62}
+  leftHandGripEulerAngles: {x: -177.3, y: -90, z: 90}
+  rightHandGripEulerAngles: {x: 0, y: 0, z: 0}
   configurePhysics: 1
   syncMassWithWeight: 1
   solverIterations: 12
@@ -2654,6 +2657,9 @@ MonoBehaviour:
   activationPadding: 0.12
   requirePlayerBelowLanding: 1
   rotatedPlatformHandForwardOffset: 0.12
+  rotatedPlatformHandForwardOffsetMinMultiplier: 0.45
+  rotatedPlatformHandForwardOffsetMinPlateSize: 0.35
+  rotatedPlatformHandForwardOffsetMaxPlateSize: 1.25
   leftHandLocalEulerAngles: {x: 0, y: 0, z: 0}
   rightHandLocalEulerAngles: {x: 0, y: 0, z: 0}
 --- !u!65 &498661471
@@ -2875,6 +2881,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: 0, y: 0, z: 0}
   handAnchorWidth: 0.229
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0, y: 0, z: 0}
   rightHandGripLocalOffset: {x: 0, y: 0, z: 0}
   leftHandGripEulerAngles: {x: -160, y: 0, z: 0}
@@ -5264,6 +5272,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: 0, y: 0, z: 0}
   handAnchorWidth: 0.135
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0, y: 0, z: 0}
   rightHandGripLocalOffset: {x: 0, y: 0, z: 0}
   leftHandGripEulerAngles: {x: -120, y: -8, z: 0}
@@ -6600,6 +6610,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: -0.48, y: -6.83, z: 53.1}
   handAnchorWidth: 0.227
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0.02, y: 0.46, z: 0}
   rightHandGripLocalOffset: {x: -0.48, y: -0.42, z: -0.5}
   leftHandGripEulerAngles: {x: -135, y: -5, z: -22}
@@ -7409,6 +7421,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: 0, y: 0, z: 0}
   handAnchorWidth: 0.135
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0, y: 0, z: 0}
   rightHandGripLocalOffset: {x: 0, y: 0, z: 0}
   leftHandGripEulerAngles: {x: -120, y: -8, z: 0}
@@ -8433,6 +8447,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: -0.48, y: -6.83, z: 53.1}
   handAnchorWidth: 0.227
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0.02, y: 0.46, z: 0}
   rightHandGripLocalOffset: {x: -0.48, y: -0.42, z: -0.5}
   leftHandGripEulerAngles: {x: -135, y: -5, z: -22}
@@ -8638,6 +8654,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: -22.2, y: 0, z: 0}
   handAnchorWidth: 0.394
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0, y: 0, z: 0}
   rightHandGripLocalOffset: {x: 0, y: 0, z: 0}
   leftHandGripEulerAngles: {x: -90, y: 0, z: 0}
@@ -10616,6 +10634,9 @@ MonoBehaviour:
   activationPadding: 0.12
   requirePlayerBelowLanding: 1
   rotatedPlatformHandForwardOffset: 0.12
+  rotatedPlatformHandForwardOffsetMinMultiplier: 0.45
+  rotatedPlatformHandForwardOffsetMinPlateSize: 0.35
+  rotatedPlatformHandForwardOffsetMaxPlateSize: 1.25
   leftHandLocalEulerAngles: {x: 0, y: 0, z: 0}
   rightHandLocalEulerAngles: {x: 0, y: 0, z: 0}
 --- !u!65 &1941542800
@@ -10922,15 +10943,15 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
       propertyPath: m_LocalScale.x
-      value: 0.15
+      value: 0.22
       objectReference: {fileID: 0}
     - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
       propertyPath: m_LocalScale.y
-      value: 0.15
+      value: 0.22
       objectReference: {fileID: 0}
     - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
       propertyPath: m_LocalScale.z
-      value: 0.15
+      value: 0.22
       objectReference: {fileID: 0}
     - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
       propertyPath: m_LocalPosition.x
@@ -11289,6 +11310,8 @@ MonoBehaviour:
   holdLocalPosition: {x: 0, y: 0, z: -0.12}
   holdLocalEulerAngles: {x: -22.2, y: 0, z: 0}
   handAnchorWidth: 0.394
+  leftHandActive: 1
+  rightHandActive: 1
   leftHandGripLocalOffset: {x: 0, y: 0, z: 0}
   rightHandGripLocalOffset: {x: 0, y: 0, z: 0}
   leftHandGripEulerAngles: {x: -90, y: 0, z: 0}

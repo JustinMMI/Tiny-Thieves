@@ -47,6 +47,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float climbLiftHeight = 0.12f;
     [SerializeField] private float climbCameraPull = 0.035f;
     [SerializeField] private float climbLookInfluence = 0.65f;
+    [SerializeField, Range(0.1f, 1f)] private float oneHandItemClimbSpeedMultiplier = 0.6f;
     [SerializeField, Range(90f, 170f)] private float maxClimbFacingAngle = 115f;
     [SerializeField] private LayerMask landingClearanceMask = ~0;
 
@@ -386,7 +387,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private bool TryGetBestClimbRoute(out ClimbZone.Route bestRoute)
     {
         bestRoute = default;
-        if (heldItem != null)
+        if (!CanClimbWithHeldItem())
         {
             return false;
         }
@@ -470,6 +471,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private IEnumerator ClimbTo(ClimbZone.Route route)
     {
+        bool oneHandItemClimb = IsHoldingItemWithOneActiveHand();
+        float activeClimbDuration = oneHandItemClimb
+            ? climbDuration / Mathf.Max(0.01f, oneHandItemClimbSpeedMultiplier)
+            : climbDuration;
+
         isClimbing = true;
         horizontalVelocity = Vector3.zero;
         verticalVelocity = 0f;
@@ -480,7 +486,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         ConfigureTinyBody(standingHeight);
         if (raymanBody != null)
         {
-            raymanBody.AttachHandsWithLocalOffsets(route.LeftHandAnchor, route.RightHandAnchor, route.LeftHandRotation, route.RightHandRotation);
+            AttachHandsForClimb(route);
         }
 
         controller.enabled = false;
@@ -491,10 +497,10 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         Vector3 liftPoint = new Vector3(grab.x, Mathf.Max(grab.y, landing.y) + climbLiftHeight, grab.z);
         float elapsed = 0f;
 
-        while (elapsed < climbDuration)
+        while (elapsed < activeClimbDuration)
         {
             elapsed += Time.deltaTime;
-            float t = Mathf.Clamp01(elapsed / climbDuration);
+            float t = Mathf.Clamp01(elapsed / activeClimbDuration);
             float eased = Mathf.SmoothStep(0f, 1f, t);
 
             if (t < 0.42f)
@@ -511,6 +517,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             }
 
             climbCameraOffset = -Mathf.Sin(eased * Mathf.PI) * climbCameraPull;
+            AttachHandsForClimb(route);
             yield return null;
         }
 
@@ -521,10 +528,78 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         ApplyCameraHeight(true);
         if (raymanBody != null)
         {
-            raymanBody.ReleaseHands();
+            if (heldItem != null)
+            {
+                UpdateHeldItemHands();
+            }
+            else
+            {
+                raymanBody.ReleaseHands();
+            }
         }
 
         isClimbing = false;
+    }
+
+    private bool CanClimbWithHeldItem()
+    {
+        return heldItem == null || GetActiveHeldItemHandCount() == 1;
+    }
+
+    private bool IsHoldingItemWithOneActiveHand()
+    {
+        return heldItem != null && GetActiveHeldItemHandCount() == 1;
+    }
+
+    private int GetActiveHeldItemHandCount()
+    {
+        if (heldItem == null)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        if (heldItem.LeftHandActive)
+        {
+            count++;
+        }
+
+        if (heldItem.RightHandActive)
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    private void AttachHandsForClimb(ClimbZone.Route route)
+    {
+        if (raymanBody == null)
+        {
+            return;
+        }
+
+        if (!IsHoldingItemWithOneActiveHand())
+        {
+            raymanBody.AttachHandsWithLocalOffsets(route.LeftHandAnchor, route.RightHandAnchor, route.LeftHandRotation, route.RightHandRotation);
+            return;
+        }
+
+        heldItem.GetHandAnchors(transform, out Vector3 itemLeftAnchor, out Vector3 itemRightAnchor);
+        heldItem.GetHandRotations(transform, out Quaternion itemLeftRotation, out Quaternion itemRightRotation);
+
+        bool itemUsesLeftHand = heldItem.LeftHandActive;
+        bool itemUsesRightHand = heldItem.RightHandActive;
+        Vector3 leftAnchor = itemUsesLeftHand ? itemLeftAnchor : route.LeftHandAnchor;
+        Vector3 rightAnchor = itemUsesRightHand ? itemRightAnchor : route.RightHandAnchor;
+        Quaternion leftRotation = itemUsesLeftHand
+            ? itemLeftRotation
+            : raymanBody.GetLeftAttachedHandRotation(route.LeftHandRotation);
+        Quaternion rightRotation = itemUsesRightHand
+            ? itemRightRotation
+            : raymanBody.GetRightAttachedHandRotation(route.RightHandRotation);
+
+        raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation);
     }
 
     private static float SmootherStep(float t)
@@ -723,7 +798,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             handElapsed += Time.deltaTime;
             if (raymanBody != null)
             {
-                raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation);
+                raymanBody.AttachHands(
+                    leftAnchor,
+                    rightAnchor,
+                    leftRotation,
+                    rightRotation,
+                    item.LeftHandActive,
+                    item.RightHandActive);
             }
 
             yield return null;
@@ -841,7 +922,14 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         heldItem.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
         heldItem.GetHandRotations(transform, out Quaternion leftRotation, out Quaternion rightRotation);
-        raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, true);
+        raymanBody.AttachHands(
+            leftAnchor,
+            rightAnchor,
+            leftRotation,
+            rightRotation,
+            heldItem.LeftHandActive,
+            heldItem.RightHandActive,
+            true);
     }
 
     private void StartPushingWagon(TinyRailWagon wagon)

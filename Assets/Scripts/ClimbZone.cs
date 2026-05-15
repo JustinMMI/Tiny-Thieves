@@ -26,6 +26,9 @@ public sealed class ClimbZone : MonoBehaviour
 
     [Header("Hands")]
     [SerializeField] private float rotatedPlatformHandForwardOffset = 0.12f;
+    [SerializeField, Range(0f, 1f)] private float rotatedPlatformHandForwardOffsetMinMultiplier = 0.45f;
+    [SerializeField, Min(0.01f)] private float rotatedPlatformHandForwardOffsetMinPlateSize = 0.35f;
+    [SerializeField, Min(0.01f)] private float rotatedPlatformHandForwardOffsetMaxPlateSize = 1.25f;
     [SerializeField] private Vector3 leftHandLocalEulerAngles = Vector3.zero;
     [SerializeField] private Vector3 rightHandLocalEulerAngles = Vector3.zero;
 
@@ -110,6 +113,8 @@ public sealed class ClimbZone : MonoBehaviour
         edgePadding = Mathf.Max(0f, edgePadding);
         landingForwardOffset = Mathf.Max(0f, landingForwardOffset);
         rotatedPlatformHandForwardOffset = Mathf.Max(0f, rotatedPlatformHandForwardOffset);
+        rotatedPlatformHandForwardOffsetMinPlateSize = Mathf.Max(0.01f, rotatedPlatformHandForwardOffsetMinPlateSize);
+        rotatedPlatformHandForwardOffsetMaxPlateSize = Mathf.Max(rotatedPlatformHandForwardOffsetMinPlateSize, rotatedPlatformHandForwardOffsetMaxPlateSize);
         activationPadding = Mathf.Max(0f, activationPadding);
     }
 
@@ -180,7 +185,8 @@ public sealed class ClimbZone : MonoBehaviour
             : volume;
         if (IsRotated(handReference) && climbDirection.sqrMagnitude > 0.0001f)
         {
-            Vector3 correction = climbDirection.normalized * rotatedPlatformHandForwardOffset;
+            float correctionOffset = GetScaledRotatedPlatformHandForwardOffset(handReference);
+            Vector3 correction = climbDirection.normalized * correctionOffset;
             leftHandAnchor += correction;
             rightHandAnchor += correction;
         }
@@ -322,6 +328,28 @@ public sealed class ClimbZone : MonoBehaviour
     {
         float normalized = Mathf.Abs(Mathf.DeltaAngle(0f, angle));
         return normalized < 0.1f;
+    }
+
+    private float GetScaledRotatedPlatformHandForwardOffset(BoxCollider box)
+    {
+        if (box == null || rotatedPlatformHandForwardOffset <= 0f)
+        {
+            return 0f;
+        }
+
+        Vector3 scaledSize = Vector3.Scale(box.size, Abs(box.transform.lossyScale));
+        float plateSize = Mathf.Max(scaledSize.x, scaledSize.z);
+        float size01 = Mathf.InverseLerp(
+            rotatedPlatformHandForwardOffsetMinPlateSize,
+            rotatedPlatformHandForwardOffsetMaxPlateSize,
+            plateSize);
+        float multiplier = Mathf.Lerp(rotatedPlatformHandForwardOffsetMinMultiplier, 1f, size01);
+        return Mathf.Min(rotatedPlatformHandForwardOffset, rotatedPlatformHandForwardOffset * multiplier);
+    }
+
+    private static Vector3 Abs(Vector3 value)
+    {
+        return new Vector3(Mathf.Abs(value.x), Mathf.Abs(value.y), Mathf.Abs(value.z));
     }
 
     private void OnDrawGizmosSelected()

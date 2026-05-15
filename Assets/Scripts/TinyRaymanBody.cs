@@ -133,6 +133,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private Vector3 previousPosition;
     private float moveCycle;
     private bool handsAttached;
+    private bool leftHandAttached;
+    private bool rightHandAttached;
     private Vector3 leftHandAnchor;
     private Vector3 rightHandAnchor;
     private Quaternion attachedLeftHandRotation;
@@ -360,11 +362,36 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     public void AttachHandsWithLocalOffsets(Vector3 leftAnchor, Vector3 rightAnchor, Quaternion leftBaseRotation, Quaternion rightBaseRotation)
     {
+        AttachHandsWithLocalOffsets(leftAnchor, rightAnchor, leftBaseRotation, rightBaseRotation, true, true);
+    }
+
+    public void AttachHandsWithLocalOffsets(
+        Vector3 leftAnchor,
+        Vector3 rightAnchor,
+        Quaternion leftBaseRotation,
+        Quaternion rightBaseRotation,
+        bool leftActive,
+        bool rightActive,
+        bool snap = false)
+    {
         AttachHands(
             leftAnchor,
             rightAnchor,
-            leftBaseRotation * Quaternion.Euler(attachedLeftHandWorldEulerAngles),
-            rightBaseRotation * Quaternion.Euler(attachedRightHandWorldEulerAngles));
+            GetLeftAttachedHandRotation(leftBaseRotation),
+            GetRightAttachedHandRotation(rightBaseRotation),
+            leftActive,
+            rightActive,
+            snap);
+    }
+
+    public Quaternion GetLeftAttachedHandRotation(Quaternion baseRotation)
+    {
+        return baseRotation * Quaternion.Euler(attachedLeftHandWorldEulerAngles);
+    }
+
+    public Quaternion GetRightAttachedHandRotation(Quaternion baseRotation)
+    {
+        return baseRotation * Quaternion.Euler(attachedRightHandWorldEulerAngles);
     }
 
     public void AttachHands(
@@ -374,7 +401,21 @@ public sealed class TinyRaymanBody : MonoBehaviour
         Quaternion rightWorldRotation,
         bool snap)
     {
-        handsAttached = true;
+        AttachHands(leftAnchor, rightAnchor, leftWorldRotation, rightWorldRotation, true, true, snap);
+    }
+
+    public void AttachHands(
+        Vector3 leftAnchor,
+        Vector3 rightAnchor,
+        Quaternion leftWorldRotation,
+        Quaternion rightWorldRotation,
+        bool leftActive,
+        bool rightActive,
+        bool snap = false)
+    {
+        handsAttached = leftActive || rightActive;
+        leftHandAttached = leftActive;
+        rightHandAttached = rightActive;
         leftHandAnchor = leftAnchor + Vector3.up * handGripLift;
         rightHandAnchor = rightAnchor + Vector3.up * handGripLift;
         attachedLeftHandRotation = leftWorldRotation;
@@ -385,6 +426,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
     public void ReleaseHands()
     {
         handsAttached = false;
+        leftHandAttached = false;
+        rightHandAttached = false;
         attachedHandsSnap = false;
     }
 
@@ -1012,28 +1055,63 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     private void UpdateHands(float speed01, float follow, float deltaTime)
     {
+        float leftPhase = Mathf.Sin(moveCycle);
+        float rightPhase = Mathf.Sin(moveCycle + Mathf.PI);
+        float airborneHandOffset = GetAirborneHandOffset();
+        Vector3 freeLeftHandPosition = new Vector3(-0.17f, 0.24f + airborneHandOffset + leftPhase * limbBobAmount * speed01, 0.1f + leftPhase * limbSwingAmount * speed01);
+        Vector3 freeRightHandPosition = new Vector3(0.17f, 0.24f + airborneHandOffset + rightPhase * limbBobAmount * speed01, 0.1f + rightPhase * limbSwingAmount * speed01);
+
         if (handsAttached)
         {
             if (attachedHandsSnap)
             {
-                SetWorld(leftHand, leftHandAnchor, attachedLeftHandRotation);
-                SetWorld(rightHand, rightHandAnchor, attachedRightHandRotation);
+                if (leftHandAttached)
+                {
+                    SetWorld(leftHand, leftHandAnchor, attachedLeftHandRotation);
+                }
+                else
+                {
+                    MoveLocal(leftHand, freeLeftHandPosition, follow);
+                }
+
+                if (rightHandAttached)
+                {
+                    SetWorld(rightHand, rightHandAnchor, attachedRightHandRotation);
+                }
+                else
+                {
+                    MoveLocal(rightHand, freeRightHandPosition, follow);
+                }
+
                 return;
             }
 
             float gripFollow = 1f - Mathf.Exp(-handGripSharpness * deltaTime);
-            MoveWorld(leftHand, leftHandAnchor, gripFollow);
-            MoveWorld(rightHand, rightHandAnchor, gripFollow);
-            RotateWorld(leftHand, attachedLeftHandRotation, gripFollow);
-            RotateWorld(rightHand, attachedRightHandRotation, gripFollow);
+            if (leftHandAttached)
+            {
+                MoveWorld(leftHand, leftHandAnchor, gripFollow);
+                RotateWorld(leftHand, attachedLeftHandRotation, gripFollow);
+            }
+            else
+            {
+                MoveLocal(leftHand, freeLeftHandPosition, follow);
+            }
+
+            if (rightHandAttached)
+            {
+                MoveWorld(rightHand, rightHandAnchor, gripFollow);
+                RotateWorld(rightHand, attachedRightHandRotation, gripFollow);
+            }
+            else
+            {
+                MoveLocal(rightHand, freeRightHandPosition, follow);
+            }
+
             return;
         }
 
-        float leftPhase = Mathf.Sin(moveCycle);
-        float rightPhase = Mathf.Sin(moveCycle + Mathf.PI);
-        float airborneHandOffset = GetAirborneHandOffset();
-        MoveLocal(leftHand, new Vector3(-0.17f, 0.24f + airborneHandOffset + leftPhase * limbBobAmount * speed01, 0.1f + leftPhase * limbSwingAmount * speed01), follow);
-        MoveLocal(rightHand, new Vector3(0.17f, 0.24f + airborneHandOffset + rightPhase * limbBobAmount * speed01, 0.1f + rightPhase * limbSwingAmount * speed01), follow);
+        MoveLocal(leftHand, freeLeftHandPosition, follow);
+        MoveLocal(rightHand, freeRightHandPosition, follow);
     }
 
     private float GetAirborneHandOffset()
