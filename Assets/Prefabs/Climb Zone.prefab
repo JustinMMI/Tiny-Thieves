@@ -76,3 +76,6 @@ MonoBehaviour:
   landingForwardOffset: 0.15
   activationPadding: 0.12
   requirePlayerBelowLanding: 1
+  rotatedPlatformHandForwardOffset: 0.25
+  leftHandLocalEulerAngles: {x: 0, y: 0, z: 0}
+  rightHandLocalEulerAngles: {x: 0, y: 0, z: 0}

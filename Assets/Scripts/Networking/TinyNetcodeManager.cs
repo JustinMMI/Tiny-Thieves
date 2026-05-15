@@ -6,6 +6,7 @@ using Unity.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 #if TINY_HAS_RELAY
 using Unity.Services.Authentication;
@@ -32,12 +33,25 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const float RemoteEntityTargetLifetime = 0.08f;
     private const float EntityAuthorityHoldTime = 0.35f;
     private const float WagonPushInputTimeout = 0.12f;
+    private const float PingSendInterval = 0.5f;
     private const string PlayerStateMessage = "TinyPlayerState";
     private const string EntityStateMessage = "TinyEntityState";
     private const string WorldIntentMessage = "TinyWorldIntent";
+    private const string PingMessage = "TinyPing";
+    private const string StartGameMessage = "TinyStartGame";
+    private const string LobbyStateMessage = "TinyLobbyState";
+    private const string SkinRequestMessage = "TinySkinRequest";
+    private const int SkinCount = 4;
     private const byte IntentPickupItem = 1;
     private const byte IntentReleaseItem = 2;
     private const byte IntentPushWagon = 3;
+    private const byte IntentGrabWagon = 4;
+    private const byte IntentReleaseWagon = 5;
+
+#if TINY_HAS_RELAY
+    private static Task unityServicesInitializationTask;
+    private static Task unityAuthenticationTask;
+#endif
 
     private readonly Dictionary<ulong, RemotePlayer> remotePlayers = new Dictionary<ulong, RemotePlayer>();
     private readonly Dictionary<string, Transform> syncedEntities = new Dictionary<string, Transform>();
@@ -46,19 +60,37 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private readonly Dictionary<string, EntityAuthority> entityAuthorities = new Dictionary<string, EntityAuthority>();
     private readonly Dictionary<string, ulong> heldEntityOwners = new Dictionary<string, ulong>();
     private readonly Dictionary<ulong, WagonPushState> activeWagonPushes = new Dictionary<ulong, WagonPushState>();
+    private readonly List<ulong> lobbyClientOrder = new List<ulong>();
+    private readonly Dictionary<ulong, int> lobbySkinAssignments = new Dictionary<ulong, int>();
 
     private static TinyNetcodeManager instance;
     private NetworkManager networkManager;
     private UnityTransport transport;
     private Component localPlayer;
+    [SerializeField] private bool autoStartNetwork;
     private float playerSendTimer;
     private float entitySendTimer;
     private float clientRetryTimer;
+    private float pingSendTimer;
+    private float lobbyStateSendTimer;
+    private float displayedPingMs;
     private bool started;
     private bool networkStartInProgress;
     private bool handlersRegistered;
     private bool callbacksRegistered;
     private int appliedLocalSkin = -1;
+    private NetworkStartRole requestedStartRole = NetworkStartRole.None;
+    private string relayJoinCodeOverride;
+    private string currentRelayJoinCode;
+    private int lastKnownLobbyPlayerCount;
+    private int localSelectedSkin = -1;
+
+    private enum NetworkStartRole
+    {
+        None,
+        Host,
+        Client
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void CreateForScene()
@@ -77,6 +109,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     {
         instance = this;
         EnsureNetworkManager();
+        SceneManager.sceneLoaded += OnSceneLoaded;
     }
 
     private void Start()
@@ -88,7 +121,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         RebuildEntityCache();
-        StartNetworkRole();
+        if (autoStartNetwork)
+        {
+            StartNetworkRole();
+        }
     }
 
     private void Update()
@@ -100,7 +136,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         RefreshSceneReferences();
 
-        if (!IsEditorHost() && !networkManager.IsClient && !networkManager.IsListening)
+        if (!IsEditorHost()
+            && requestedStartRole == NetworkStartRole.Client
+            && !networkManager.IsClient
+            && !networkManager.IsListening)
         {
             RetryClientStart();
             return;
@@ -109,6 +148,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         RegisterMessageHandlers();
         ApplyLocalSkin();
         ProcessServerWagonPushes();
+        UpdatePing();
+        SendLobbyState();
         SendLocalState();
         UpdateRemotePlayers();
         ApplyRemoteEntityTargets();
@@ -121,6 +162,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PlayerStateMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(EntityStateMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(WorldIntentMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PingMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(StartGameMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(LobbyStateMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(SkinRequestMessage);
         }
 
         if (networkManager != null && callbacksRegistered)
@@ -133,6 +178,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         {
             instance = null;
         }
+
+        SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
     public static bool IsClientOnlyActive =>
@@ -140,6 +187,123 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         && instance.networkManager != null
         && instance.networkManager.IsListening
         && !instance.networkManager.IsServer;
+
+    public static bool IsNetworkActive =>
+        instance != null
+        && instance.networkManager != null
+        && instance.networkManager.IsListening;
+
+    public static bool IsHostActive =>
+        instance != null
+        && instance.networkManager != null
+        && instance.networkManager.IsListening
+        && instance.networkManager.IsServer;
+
+    public static bool IsClientConnected =>
+        instance != null
+        && instance.networkManager != null
+        && instance.networkManager.IsListening
+        && (instance.networkManager.IsServer || instance.networkManager.IsConnectedClient);
+
+    public static string CurrentRelayJoinCode => instance != null ? instance.currentRelayJoinCode : string.Empty;
+
+    public static int ConnectedPlayerCount
+    {
+        get
+        {
+            if (instance == null || instance.networkManager == null || !instance.networkManager.IsListening)
+            {
+                return 0;
+            }
+
+            return instance.networkManager.IsServer
+                ? Mathf.Max(instance.networkManager.ConnectedClientsIds.Count, instance.lobbyClientOrder.Count)
+                : Mathf.Max(1, instance.lastKnownLobbyPlayerCount);
+        }
+    }
+
+    public static bool IsConnecting =>
+        instance != null
+        && (instance.networkStartInProgress || instance.requestedStartRole == NetworkStartRole.Client)
+        && !IsClientConnected;
+
+    public static int LocalEquippedSkinIndex => instance != null ? instance.GetLocalAssignedSkin() : -1;
+
+    public static int SkinOptionCount => SkinCount;
+
+    public static int GetLobbySkinBySlot(int slot)
+    {
+        return instance != null ? instance.GetLobbySkinBySlotInternal(slot) : -1;
+    }
+
+    public static bool IsSkinTakenByOther(int skinIndex)
+    {
+        return instance != null && instance.IsSkinTakenByOtherInternal(skinIndex);
+    }
+
+    public static bool RequestSkinFromMenu(int skinIndex)
+    {
+        if (instance == null)
+        {
+            return false;
+        }
+
+        return instance.RequestSkinInternal(skinIndex);
+    }
+
+    public static void StartHostFromMenu()
+    {
+        if (instance == null)
+        {
+            return;
+        }
+
+        instance.requestedStartRole = NetworkStartRole.Host;
+        instance.relayJoinCodeOverride = null;
+        instance.ResetLobbyState();
+        instance.StartNetworkRole();
+    }
+
+    public static bool StartClientFromMenu(string joinCode)
+    {
+        if (instance == null || string.IsNullOrWhiteSpace(joinCode))
+        {
+            return false;
+        }
+
+        instance.requestedStartRole = NetworkStartRole.Client;
+        instance.relayJoinCodeOverride = joinCode.Trim().ToUpperInvariant();
+        instance.ResetLobbyState();
+        instance.StartNetworkRole();
+        return true;
+    }
+
+    public static void StopFromMenu()
+    {
+        if (instance == null || instance.networkManager == null)
+        {
+            return;
+        }
+
+        instance.networkManager.Shutdown();
+        instance.started = false;
+        instance.networkStartInProgress = false;
+        instance.currentRelayJoinCode = string.Empty;
+        instance.relayJoinCodeOverride = null;
+        instance.requestedStartRole = NetworkStartRole.None;
+        instance.ResetLobbyState();
+    }
+
+    public static void StartGameFromMenu(string sceneName)
+    {
+        if (instance == null)
+        {
+            LoadGameplayScene(sceneName);
+            return;
+        }
+
+        instance.SendStartGame(sceneName);
+    }
 
     public static bool TrySendItemPickup(Transform item)
     {
@@ -154,6 +318,21 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     public static bool TrySendWagonPush(Transform wagon, float input, Vector3 playerPosition, Quaternion playerRotation)
     {
         return instance != null && instance.SendWagonPushIntent(wagon, input, playerPosition, playerRotation);
+    }
+
+    public static bool TrySendWagonGrab(Transform wagon, Vector3 playerPosition, Quaternion playerRotation)
+    {
+        return instance != null && instance.SendWagonAttachIntent(wagon, playerPosition, playerRotation, true);
+    }
+
+    public static bool TrySendWagonRelease(Transform wagon, Vector3 playerPosition, Quaternion playerRotation)
+    {
+        return instance != null && instance.SendWagonAttachIntent(wagon, playerPosition, playerRotation, false);
+    }
+
+    public static bool CanUseWagonSide(Transform wagon, Transform player)
+    {
+        return instance == null || instance.CanUseWagonSideInternal(wagon, player);
     }
 
     private void EnsureNetworkManager()
@@ -207,7 +386,15 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
-        if (IsEditorHost())
+        if (requestedStartRole == NetworkStartRole.Host)
+        {
+            started = await TryStartHostAsync();
+        }
+        else if (requestedStartRole == NetworkStartRole.Client)
+        {
+            started = await TryStartClientAsync();
+        }
+        else if (IsEditorHost())
         {
             started = await TryStartHostAsync();
         }
@@ -256,6 +443,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 transport.SetRelayServerData(AllocationUtils.ToRelayServerData(allocation, RelayConnectionType));
 
                 bool relayOk = networkManager.StartClient();
+                if (relayOk)
+                {
+                    currentRelayJoinCode = joinCode.Trim().ToUpperInvariant();
+                }
+
                 networkStartInProgress = false;
                 Debug.Log(relayOk
                     ? "Tiny Netcode client joining Relay room " + joinCode + "."
@@ -265,6 +457,13 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             catch (Exception exception)
             {
                 networkStartInProgress = false;
+                if (requestedStartRole == NetworkStartRole.Client)
+                {
+                    requestedStartRole = NetworkStartRole.None;
+                    relayJoinCodeOverride = null;
+                    currentRelayJoinCode = string.Empty;
+                }
+
                 Debug.LogWarning("Tiny Relay client failed, will retry.\n" + exception);
                 return false;
             }
@@ -302,6 +501,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 bool relayOk = networkManager.StartHost();
                 if (relayOk)
                 {
+                    EnsureLobbyClient(networkManager.LocalClientId);
+                    BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+                    currentRelayJoinCode = joinCode.Trim().ToUpperInvariant();
                     WriteRelayJoinCode(joinCode);
                     Debug.Log("Tiny Netcode started as Relay host. Join code: " + joinCode + " (saved to " + GetRelayJoinCodePath() + ")");
                 }
@@ -322,6 +524,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         transport.SetConnectionData(Localhost, Port, Localhost);
         bool ok = networkManager.StartHost();
+        if (ok)
+        {
+            EnsureLobbyClient(networkManager.LocalClientId);
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        }
+
         networkStartInProgress = false;
         Debug.Log(ok ? "Tiny Netcode started as Editor host on " + Localhost + ":" + Port + "." : "Tiny Netcode host failed to start.");
         return ok;
@@ -329,6 +537,13 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void OnClientDisconnect(ulong clientId)
     {
+        activeWagonPushes.Remove(clientId);
+        if (networkManager != null && networkManager.IsServer)
+        {
+            RemoveLobbyClient(clientId);
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        }
+
         if (IsEditorHost() || networkManager == null || clientId != networkManager.LocalClientId)
         {
             Debug.Log("Tiny Netcode client disconnected: " + clientId);
@@ -340,6 +555,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         networkStartInProgress = false;
         handlersRegistered = false;
         clientRetryTimer = 0f;
+        ResetLobbyState();
         Debug.Log("Tiny Netcode client disconnected, waiting for host...");
     }
 
@@ -353,19 +569,75 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         Debug.Log(networkManager.IsServer
             ? "Tiny Netcode client connected to host: " + clientId + " (" + networkManager.ConnectedClientsIds.Count + " connected)"
             : "Tiny Netcode connected to host as client " + clientId + ".");
+
+        if (networkManager.IsServer)
+        {
+            EnsureLobbyClient(clientId);
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        }
+    }
+
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        localPlayer = null;
+        appliedLocalSkin = -1;
+        syncedEntities.Clear();
+        remoteEntityTargets.Clear();
+        lastSentEntityPoses.Clear();
+        entityAuthorities.Clear();
+        heldEntityOwners.Clear();
+        activeWagonPushes.Clear();
+
+        foreach (RemotePlayer remotePlayer in remotePlayers.Values)
+        {
+            if (remotePlayer.Transform != null)
+            {
+                Destroy(remotePlayer.Transform.gameObject);
+            }
+        }
+
+        remotePlayers.Clear();
+        RefreshSceneReferences();
     }
 
 #if TINY_HAS_RELAY
     private static async Task EnsureUnityServicesSignedInAsync()
     {
-        if (UnityServices.State == ServicesInitializationState.Uninitialized)
+        if (UnityServices.State != ServicesInitializationState.Initialized)
         {
-            await UnityServices.InitializeAsync();
+            if (unityServicesInitializationTask == null
+                || unityServicesInitializationTask.IsCanceled
+                || unityServicesInitializationTask.IsFaulted)
+            {
+                if (UnityServices.State == ServicesInitializationState.Uninitialized)
+                {
+                    unityServicesInitializationTask = UnityServices.InitializeAsync();
+                }
+            }
+
+            if (unityServicesInitializationTask != null)
+            {
+                await unityServicesInitializationTask;
+            }
+            else
+            {
+                while (UnityServices.State == ServicesInitializationState.Initializing)
+                {
+                    await Task.Yield();
+                }
+            }
         }
 
         if (!AuthenticationService.Instance.IsSignedIn)
         {
-            await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            if (unityAuthenticationTask == null
+                || unityAuthenticationTask.IsCanceled
+                || unityAuthenticationTask.IsFaulted)
+            {
+                unityAuthenticationTask = AuthenticationService.Instance.SignInAnonymouslyAsync();
+            }
+
+            await unityAuthenticationTask;
         }
     }
 #endif
@@ -386,6 +658,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         if (!string.IsNullOrWhiteSpace(fromArgs))
         {
             return fromArgs.Trim().ToUpperInvariant();
+        }
+
+        if (instance != null && !string.IsNullOrWhiteSpace(instance.relayJoinCodeOverride))
+        {
+            return instance.relayJoinCodeOverride.Trim().ToUpperInvariant();
         }
 
         foreach (string path in GetRelayJoinCodePaths())
@@ -489,6 +766,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PlayerStateMessage, OnPlayerStateMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(EntityStateMessage, OnEntityStateMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(WorldIntentMessage, OnWorldIntentMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PingMessage, OnPingMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(StartGameMessage, OnStartGameMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(LobbyStateMessage, OnLobbyStateMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(SkinRequestMessage, OnSkinRequestMessage);
         handlersRegistered = true;
     }
 
@@ -549,15 +830,23 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void SendPlayerState()
     {
-        using FastBufferWriter writer = new FastBufferWriter(768, Allocator.Temp);
+        using FastBufferWriter writer = new FastBufferWriter(1024, Allocator.Temp);
         Transform playerTransform = localPlayer.transform;
+        Component body = localPlayer.GetComponent("TinyRaymanBody");
         int skinIndex = GetLocalSkinIndex();
-        HandPoseState handPose = GetHandPose(localPlayer.GetComponent("TinyRaymanBody"));
+        float pitch = GetCurrentPitch(localPlayer);
+        Quaternion cameraRotation = GetCurrentCameraRotation(localPlayer, playerTransform);
+        int jumpSequence = GetJumpSequence(body);
+        bool jumpAirborne = GetJumpAirborne(body);
+        HandPoseState handPose = GetHandPose(body);
         HeldEntityState heldEntity = GetHeldEntityState(localPlayer);
         writer.WriteValueSafe(networkManager.LocalClientId);
         writer.WriteValueSafe(playerTransform.position);
         writer.WriteValueSafe(playerTransform.rotation);
-        writer.WriteValueSafe(GetCurrentPitch(localPlayer));
+        writer.WriteValueSafe(pitch);
+        writer.WriteValueSafe(cameraRotation);
+        writer.WriteValueSafe(jumpSequence);
+        writer.WriteValueSafe(jumpAirborne);
         writer.WriteValueSafe(skinIndex);
         WriteHandPose(writer, handPose);
         WriteHeldEntityState(writer, heldEntity);
@@ -620,12 +909,75 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private bool SendWagonPushIntent(Transform wagon, float input, Vector3 playerPosition, Quaternion playerRotation)
     {
+        if (networkManager != null && networkManager.IsServer)
+        {
+            string serverKey = GetSyncedEntityKey(wagon);
+            if (string.IsNullOrEmpty(serverKey))
+            {
+                return false;
+            }
+
+            if (!activeWagonPushes.ContainsKey(networkManager.LocalClientId)
+                && !CanClientUseWagonSide(networkManager.LocalClientId, wagon, playerPosition))
+            {
+                return false;
+            }
+
+            activeWagonPushes[networkManager.LocalClientId] = new WagonPushState(
+                serverKey,
+                input,
+                playerPosition,
+                Time.time + WagonPushInputTimeout,
+                true);
+
+            return true;
+        }
+
         if (!CanSendWorldIntent(wagon, out string key))
         {
             return false;
         }
 
         SendWorldIntent(IntentPushWagon, key, wagon.position, wagon.rotation, Vector3.zero, input, playerPosition, playerRotation, NetworkDelivery.UnreliableSequenced);
+        return true;
+    }
+
+    private bool SendWagonAttachIntent(Transform wagon, Vector3 playerPosition, Quaternion playerRotation, bool isGrab)
+    {
+        if (networkManager != null && networkManager.IsServer)
+        {
+            string serverKey = GetSyncedEntityKey(wagon);
+            if (string.IsNullOrEmpty(serverKey))
+            {
+                return false;
+            }
+
+            if (!isGrab)
+            {
+                activeWagonPushes.Remove(networkManager.LocalClientId);
+                return true;
+            }
+
+            if (!CanClientUseWagonSide(networkManager.LocalClientId, wagon, playerPosition))
+            {
+                return false;
+            }
+
+            activeWagonPushes[networkManager.LocalClientId] = new WagonPushState(
+                serverKey,
+                0f,
+                playerPosition,
+                Time.time + WagonPushInputTimeout,
+                true);
+            return true;
+        }
+
+        if (!CanSendWorldIntent(wagon, out string key))
+        {
+            return false;
+        }
+
+        SendWorldIntent(isGrab ? IntentGrabWagon : IntentReleaseWagon, key, wagon.position, wagon.rotation, Vector3.zero, 0f, playerPosition, playerRotation, NetworkDelivery.ReliableSequenced);
         return true;
     }
 
@@ -671,10 +1023,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void OnPlayerStateMessage(ulong senderClientId, FastBufferReader reader)
     {
+        if (localPlayer == null)
+        {
+            RefreshSceneReferences();
+            if (localPlayer == null)
+            {
+                return;
+            }
+        }
+
         reader.ReadValueSafe(out ulong ownerClientId);
         reader.ReadValueSafe(out Vector3 position);
         reader.ReadValueSafe(out Quaternion rotation);
         reader.ReadValueSafe(out float pitch);
+        reader.ReadValueSafe(out Quaternion cameraRotation);
+        reader.ReadValueSafe(out int jumpSequence);
+        reader.ReadValueSafe(out bool jumpAirborne);
         reader.ReadValueSafe(out int skinIndex);
         HandPoseState handPose = ReadHandPose(reader);
         HeldEntityState heldEntity = ReadHeldEntityState(reader);
@@ -687,7 +1051,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         if (networkManager.IsServer)
         {
             heldEntity = GetServerApprovedHeldEntity(senderClientId, heldEntity);
-            RelayPlayerPayload(senderClientId, ownerClientId, position, rotation, pitch, skinIndex, handPose, heldEntity);
+            RelayPlayerPayload(senderClientId, ownerClientId, position, rotation, pitch, cameraRotation, jumpSequence, jumpAirborne, skinIndex, handPose, heldEntity);
         }
 
         ApplyHeldEntityPayload(senderClientId, heldEntity);
@@ -705,6 +1069,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         remotePlayer.TargetPosition = position;
         remotePlayer.TargetRotation = rotation;
         remotePlayer.TargetPitch = pitch;
+        remotePlayer.TargetCameraRotation = cameraRotation;
+        remotePlayer.TargetJumpSequence = jumpSequence;
+        remotePlayer.TargetJumpAirborne = jumpAirborne;
         remotePlayer.TargetHands = handPose;
         remotePlayer.TargetHeldEntityKey = heldEntity.HasEntity ? heldEntity.Key : null;
         remotePlayer.ApplySkin(skinIndex);
@@ -716,15 +1083,21 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         Vector3 position,
         Quaternion rotation,
         float pitch,
+        Quaternion cameraRotation,
+        int jumpSequence,
+        bool jumpAirborne,
         int skinIndex,
         HandPoseState handPose,
         HeldEntityState heldEntity)
     {
-        using FastBufferWriter writer = new FastBufferWriter(768, Allocator.Temp);
+        using FastBufferWriter writer = new FastBufferWriter(1024, Allocator.Temp);
         writer.WriteValueSafe(ownerClientId);
         writer.WriteValueSafe(position);
         writer.WriteValueSafe(rotation);
         writer.WriteValueSafe(pitch);
+        writer.WriteValueSafe(cameraRotation);
+        writer.WriteValueSafe(jumpSequence);
+        writer.WriteValueSafe(jumpAirborne);
         writer.WriteValueSafe(skinIndex);
         WriteHandPose(writer, handPose);
         WriteHeldEntityState(writer, heldEntity);
@@ -843,14 +1216,425 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             case IntentPushWagon:
                 if (IsWagon(entity))
                 {
+                    if (!activeWagonPushes.ContainsKey(senderClientId)
+                        && !CanClientUseWagonSide(senderClientId, entity, playerPosition))
+                    {
+                        return;
+                    }
+
                     activeWagonPushes[senderClientId] = new WagonPushState(
                         key,
                         input,
                         playerPosition,
-                        Time.time + WagonPushInputTimeout);
+                        Time.time + WagonPushInputTimeout,
+                        true);
+                }
+                break;
+
+            case IntentGrabWagon:
+                if (IsWagon(entity) && CanClientUseWagonSide(senderClientId, entity, playerPosition))
+                {
+                    activeWagonPushes[senderClientId] = new WagonPushState(
+                        key,
+                        0f,
+                        playerPosition,
+                        Time.time + WagonPushInputTimeout,
+                        true);
+                }
+                break;
+
+            case IntentReleaseWagon:
+                if (IsWagon(entity))
+                {
+                    if (activeWagonPushes.TryGetValue(senderClientId, out WagonPushState push)
+                        && push.WagonKey == key)
+                    {
+                        activeWagonPushes.Remove(senderClientId);
+                    }
                 }
                 break;
         }
+    }
+
+    private void SendLobbyState()
+    {
+        if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        lobbyStateSendTimer -= Time.deltaTime;
+        if (lobbyStateSendTimer > 0f)
+        {
+            return;
+        }
+
+        lobbyStateSendTimer = 0.25f;
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            EnsureLobbyClient(clientId);
+        }
+
+        BroadcastLobbyState(NetworkDelivery.UnreliableSequenced);
+    }
+
+    private void OnLobbyStateMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        ReadLobbyState(reader);
+    }
+
+    private void BroadcastLobbyState(NetworkDelivery delivery)
+    {
+        if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        lastKnownLobbyPlayerCount = Mathf.Clamp(lobbyClientOrder.Count, 1, SkinCount);
+        using FastBufferWriter writer = new FastBufferWriter(256, Allocator.Temp);
+        WriteLobbyState(writer);
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            if (clientId != networkManager.LocalClientId)
+            {
+                networkManager.CustomMessagingManager.SendNamedMessage(LobbyStateMessage, clientId, writer, delivery);
+            }
+        }
+    }
+
+    private void WriteLobbyState(FastBufferWriter writer)
+    {
+        int count = Mathf.Min(lobbyClientOrder.Count, SkinCount);
+        writer.WriteValueSafe(count);
+        for (int i = 0; i < count; i++)
+        {
+            ulong clientId = lobbyClientOrder[i];
+            int skinIndex = lobbySkinAssignments.TryGetValue(clientId, out int assignedSkin) ? assignedSkin : -1;
+            writer.WriteValueSafe(clientId);
+            writer.WriteValueSafe(skinIndex);
+        }
+    }
+
+    private void ReadLobbyState(FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out int playerCount);
+        int count = Mathf.Clamp(playerCount, 0, SkinCount);
+        lobbyClientOrder.Clear();
+        lobbySkinAssignments.Clear();
+
+        for (int i = 0; i < count; i++)
+        {
+            reader.ReadValueSafe(out ulong clientId);
+            reader.ReadValueSafe(out int skinIndex);
+            lobbyClientOrder.Add(clientId);
+            lobbySkinAssignments[clientId] = skinIndex;
+            if (networkManager != null && clientId == networkManager.LocalClientId && skinIndex >= 0)
+            {
+                localSelectedSkin = Mathf.Clamp(skinIndex, 0, SkinCount - 1);
+            }
+        }
+
+        lastKnownLobbyPlayerCount = Mathf.Clamp(count, 1, SkinCount);
+    }
+
+    private void EnsureLobbyClient(ulong clientId)
+    {
+        if (!lobbyClientOrder.Contains(clientId))
+        {
+            lobbyClientOrder.Add(clientId);
+        }
+
+        if (!lobbySkinAssignments.ContainsKey(clientId))
+        {
+            lobbySkinAssignments[clientId] = -1;
+        }
+    }
+
+    private void RemoveLobbyClient(ulong clientId)
+    {
+        lobbyClientOrder.Remove(clientId);
+        lobbySkinAssignments.Remove(clientId);
+        lastKnownLobbyPlayerCount = Mathf.Clamp(lobbyClientOrder.Count, 0, SkinCount);
+    }
+
+    private void ResetLobbyState()
+    {
+        lobbyClientOrder.Clear();
+        lobbySkinAssignments.Clear();
+        lastKnownLobbyPlayerCount = 0;
+        localSelectedSkin = -1;
+    }
+
+    private int GetLobbySkinBySlotInternal(int slot)
+    {
+        if (slot < 0 || slot >= lobbyClientOrder.Count)
+        {
+            return -1;
+        }
+
+        ulong clientId = lobbyClientOrder[slot];
+        return lobbySkinAssignments.TryGetValue(clientId, out int skinIndex) ? skinIndex : -1;
+    }
+
+    private int GetLocalAssignedSkin()
+    {
+        if (networkManager != null && lobbySkinAssignments.TryGetValue(networkManager.LocalClientId, out int skinIndex))
+        {
+            return skinIndex;
+        }
+
+        return localSelectedSkin;
+    }
+
+    private bool IsSkinTakenByOtherInternal(int skinIndex)
+    {
+        if (skinIndex < 0 || skinIndex >= SkinCount)
+        {
+            return false;
+        }
+
+        ulong localClientId = networkManager != null ? networkManager.LocalClientId : ulong.MaxValue;
+        foreach (KeyValuePair<ulong, int> assignment in lobbySkinAssignments)
+        {
+            if (assignment.Value == skinIndex && assignment.Key != localClientId)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool RequestSkinInternal(int skinIndex)
+    {
+        int clampedSkin = Mathf.Clamp(skinIndex, 0, SkinCount - 1);
+        if (networkManager == null || !networkManager.IsListening)
+        {
+            localSelectedSkin = clampedSkin;
+            return true;
+        }
+
+        if (networkManager.IsServer)
+        {
+            return TryAssignSkin(networkManager.LocalClientId, clampedSkin);
+        }
+
+        if (!networkManager.IsConnectedClient || networkManager.CustomMessagingManager == null)
+        {
+            return false;
+        }
+
+        using FastBufferWriter writer = new FastBufferWriter(16, Allocator.Temp);
+        writer.WriteValueSafe(clampedSkin);
+        networkManager.CustomMessagingManager.SendNamedMessage(SkinRequestMessage, NetworkManager.ServerClientId, writer, NetworkDelivery.ReliableSequenced);
+        return true;
+    }
+
+    private void OnSkinRequestMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        if (networkManager == null || !networkManager.IsServer)
+        {
+            return;
+        }
+
+        reader.ReadValueSafe(out int skinIndex);
+        TryAssignSkin(senderClientId, skinIndex);
+    }
+
+    private bool TryAssignSkin(ulong clientId, int skinIndex)
+    {
+        int clampedSkin = Mathf.Clamp(skinIndex, 0, SkinCount - 1);
+        EnsureLobbyClient(clientId);
+        foreach (KeyValuePair<ulong, int> assignment in lobbySkinAssignments)
+        {
+            if (assignment.Key != clientId && assignment.Value == clampedSkin)
+            {
+                return false;
+            }
+        }
+
+        lobbySkinAssignments[clientId] = clampedSkin;
+        if (networkManager != null && clientId == networkManager.LocalClientId)
+        {
+            localSelectedSkin = clampedSkin;
+            appliedLocalSkin = -1;
+        }
+
+        BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+        return true;
+    }
+
+    private void AssignMissingSkins()
+    {
+        if (networkManager == null || !networkManager.IsServer)
+        {
+            return;
+        }
+
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            EnsureLobbyClient(clientId);
+        }
+
+        List<int> availableSkins = new List<int>();
+        for (int skin = 0; skin < SkinCount; skin++)
+        {
+            bool taken = false;
+            foreach (int assignedSkin in lobbySkinAssignments.Values)
+            {
+                if (assignedSkin == skin)
+                {
+                    taken = true;
+                    break;
+                }
+            }
+
+            if (!taken)
+            {
+                availableSkins.Add(skin);
+            }
+        }
+
+        for (int i = 0; i < lobbyClientOrder.Count; i++)
+        {
+            ulong clientId = lobbyClientOrder[i];
+            if (lobbySkinAssignments.TryGetValue(clientId, out int assignedSkin) && assignedSkin >= 0)
+            {
+                continue;
+            }
+
+            if (availableSkins.Count == 0)
+            {
+                lobbySkinAssignments[clientId] = Mathf.Clamp(i, 0, SkinCount - 1);
+                continue;
+            }
+
+            int randomIndex = UnityEngine.Random.Range(0, availableSkins.Count);
+            lobbySkinAssignments[clientId] = availableSkins[randomIndex];
+            availableSkins.RemoveAt(randomIndex);
+        }
+
+        if (networkManager != null && lobbySkinAssignments.TryGetValue(networkManager.LocalClientId, out int localSkin))
+        {
+            localSelectedSkin = localSkin;
+            appliedLocalSkin = -1;
+        }
+    }
+
+    private void UpdatePing()
+    {
+        if (networkManager == null || networkManager.CustomMessagingManager == null || !networkManager.IsListening)
+        {
+            return;
+        }
+
+        if (networkManager.IsServer)
+        {
+            displayedPingMs = 0f;
+            return;
+        }
+
+        if (!networkManager.IsConnectedClient)
+        {
+            return;
+        }
+
+        pingSendTimer -= Time.deltaTime;
+        if (pingSendTimer > 0f)
+        {
+            return;
+        }
+
+        pingSendTimer = PingSendInterval;
+        using FastBufferWriter writer = new FastBufferWriter(32, Allocator.Temp);
+        writer.WriteValueSafe(false);
+        writer.WriteValueSafe(Time.realtimeSinceStartup);
+        networkManager.CustomMessagingManager.SendNamedMessage(PingMessage, NetworkManager.ServerClientId, writer, NetworkDelivery.Unreliable);
+    }
+
+    private void OnPingMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out bool isReply);
+        reader.ReadValueSafe(out float sentTime);
+
+        if (networkManager == null || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        if (networkManager.IsServer && !isReply)
+        {
+            using FastBufferWriter writer = new FastBufferWriter(32, Allocator.Temp);
+            writer.WriteValueSafe(true);
+            writer.WriteValueSafe(sentTime);
+            networkManager.CustomMessagingManager.SendNamedMessage(PingMessage, senderClientId, writer, NetworkDelivery.Unreliable);
+            return;
+        }
+
+        if (!networkManager.IsServer && isReply)
+        {
+            displayedPingMs = Mathf.Max(0f, (Time.realtimeSinceStartup - sentTime) * 1000f);
+        }
+    }
+
+    private void SendStartGame(string sceneName)
+    {
+        string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
+        if (networkManager != null
+            && networkManager.IsListening
+            && networkManager.IsServer
+            && networkManager.CustomMessagingManager != null)
+        {
+            AssignMissingSkins();
+            BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
+            using FastBufferWriter writer = new FastBufferWriter(512, Allocator.Temp);
+            FixedString128Bytes fixedSceneName = targetScene;
+            writer.WriteValueSafe(fixedSceneName);
+            WriteLobbyState(writer);
+
+            foreach (ulong clientId in networkManager.ConnectedClientsIds)
+            {
+                if (clientId != networkManager.LocalClientId)
+                {
+                    networkManager.CustomMessagingManager.SendNamedMessage(StartGameMessage, clientId, writer, NetworkDelivery.ReliableSequenced);
+                }
+            }
+        }
+
+        LoadGameplayScene(targetScene);
+    }
+
+    private void OnStartGameMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out FixedString128Bytes fixedSceneName);
+        ReadLobbyState(reader);
+        LoadGameplayScene(fixedSceneName.ToString());
+    }
+
+    private static void LoadGameplayScene(string sceneName)
+    {
+        string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
+        if (SceneManager.GetActiveScene().name == targetScene)
+        {
+            return;
+        }
+
+        SceneManager.LoadScene(targetScene);
+    }
+
+    private void OnGUI()
+    {
+        if (networkManager == null || !networkManager.IsListening)
+        {
+            return;
+        }
+
+        string text = networkManager.IsServer
+            ? "Ping: host"
+            : "Ping: " + Mathf.RoundToInt(displayedPingMs) + " ms";
+        GUIStyle style = GUI.skin.label;
+        Vector2 size = style.CalcSize(new GUIContent(text));
+        GUI.Label(new Rect(Screen.width - size.x - 16f, 12f, size.x + 4f, 24f), text);
     }
 
     private void ProcessServerWagonPushes()
@@ -861,10 +1645,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         List<ulong> expiredClients = null;
-        HashSet<string> movedWagons = null;
+        Dictionary<string, WagonFramePush> wagonPushes = null;
         foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
         {
-            if (Time.time > push.Value.ExpireTime || Mathf.Abs(push.Value.Input) < 0.01f)
+            if (Time.time > push.Value.ExpireTime)
             {
                 expiredClients ??= new List<ulong>();
                 expiredClients.Add(push.Key);
@@ -878,9 +1662,16 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 continue;
             }
 
-            InvokePushWagonFromNetwork(wagon, push.Value.PlayerPosition, push.Value.Input, Time.deltaTime);
-            movedWagons ??= new HashSet<string>();
-            movedWagons.Add(push.Value.WagonKey);
+            int side = InvokeGetWagonPlayerSide(wagon, push.Value.PlayerPosition);
+            if (Mathf.Abs(push.Value.Input) < 0.01f)
+            {
+                continue;
+            }
+
+            wagonPushes ??= new Dictionary<string, WagonFramePush>();
+            wagonPushes.TryGetValue(push.Value.WagonKey, out WagonFramePush framePush);
+            framePush.Add(side, push.Value.Input);
+            wagonPushes[push.Value.WagonKey] = framePush;
         }
 
         if (expiredClients != null)
@@ -891,16 +1682,76 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             }
         }
 
-        if (movedWagons != null)
+        if (wagonPushes != null)
         {
-            foreach (string wagonKey in movedWagons)
+            foreach (KeyValuePair<string, WagonFramePush> push in wagonPushes)
             {
-                if (syncedEntities.TryGetValue(wagonKey, out Transform wagon) && wagon != null)
+                if (syncedEntities.TryGetValue(push.Key, out Transform wagon) && wagon != null)
                 {
-                    BroadcastAuthoritativeEntity(wagonKey, wagon);
+                    float railInput = Mathf.Clamp(push.Value.CombinedRailInput, -1f, 1f);
+                    if (Mathf.Abs(railInput) > 0.01f)
+                    {
+                        InvokePushWagonAlongRail(wagon, railInput, Time.deltaTime);
+                        BroadcastAuthoritativeEntity(push.Key, wagon);
+                    }
                 }
             }
         }
+    }
+
+    private bool CanUseWagonSideInternal(Transform wagon, Transform player)
+    {
+        if (wagon == null || player == null || networkManager == null || !networkManager.IsServer)
+        {
+            return true;
+        }
+
+        string wagonKey = GetSyncedEntityKey(wagon);
+        if (string.IsNullOrEmpty(wagonKey))
+        {
+            return true;
+        }
+
+        int requestedSide = InvokeGetWagonPlayerSide(wagon, player.position);
+        foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
+        {
+            if (push.Value.WagonKey != wagonKey || Time.time > push.Value.ExpireTime)
+            {
+                continue;
+            }
+
+            if (InvokeGetWagonPlayerSide(wagon, push.Value.PlayerPosition) == requestedSide)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool CanClientUseWagonSide(ulong clientId, Transform wagon, Vector3 playerPosition)
+    {
+        string wagonKey = GetSyncedEntityKey(wagon);
+        if (string.IsNullOrEmpty(wagonKey))
+        {
+            return true;
+        }
+
+        int requestedSide = InvokeGetWagonPlayerSide(wagon, playerPosition);
+        foreach (KeyValuePair<ulong, WagonPushState> push in activeWagonPushes)
+        {
+            if (push.Key == clientId || push.Value.WagonKey != wagonKey || Time.time > push.Value.ExpireTime)
+            {
+                continue;
+            }
+
+            if (InvokeGetWagonPlayerSide(wagon, push.Value.PlayerPosition) == requestedSide)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void BroadcastAuthoritativeEntity(string key, Transform entity)
@@ -1008,7 +1859,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
             remotePlayer.Transform.position = Vector3.Lerp(remotePlayer.Transform.position, remotePlayer.TargetPosition, follow);
             remotePlayer.Transform.rotation = Quaternion.Slerp(remotePlayer.Transform.rotation, remotePlayer.TargetRotation, follow);
-            remotePlayer.ApplyPitch();
+            remotePlayer.ApplyLookAndJump();
             remotePlayer.ApplyHands(syncedEntities);
         }
     }
@@ -1171,12 +2022,18 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private int GetLocalSkinIndex()
     {
-        if (IsEditorHost() || networkManager == null)
+        int assignedSkin = GetLocalAssignedSkin();
+        if (assignedSkin >= 0)
+        {
+            return Mathf.Clamp(assignedSkin, 0, SkinCount - 1);
+        }
+
+        if (networkManager == null)
         {
             return 0;
         }
 
-        return Mathf.Clamp((int)networkManager.LocalClientId, 1, 3);
+        return IsEditorHost() ? 0 : Mathf.Clamp((int)networkManager.LocalClientId, 1, SkinCount - 1);
     }
 
     private void ApplyLocalSkin()
@@ -1263,13 +2120,48 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public readonly float Input;
         public readonly Vector3 PlayerPosition;
         public readonly float ExpireTime;
+        public readonly bool IsAttached;
 
-        public WagonPushState(string wagonKey, float input, Vector3 playerPosition, float expireTime)
+        public WagonPushState(string wagonKey, float input, Vector3 playerPosition, float expireTime, bool isAttached)
         {
             WagonKey = wagonKey;
             Input = input;
             PlayerPosition = playerPosition;
             ExpireTime = expireTime;
+            IsAttached = isAttached;
+        }
+    }
+
+    private struct WagonFramePush
+    {
+        private bool hasBackSide;
+        private bool hasFrontSide;
+        private float backSideInput;
+        private float frontSideInput;
+
+        public float CombinedRailInput => backSideInput + frontSideInput;
+
+        public void Add(int side, float input)
+        {
+            if (side < 0)
+            {
+                if (hasFrontSide)
+                {
+                    return;
+                }
+
+                hasFrontSide = true;
+                frontSideInput = input * side;
+                return;
+            }
+
+            if (hasBackSide)
+            {
+                return;
+            }
+
+            hasBackSide = true;
+            backSideInput = input * side;
         }
     }
 
@@ -1323,8 +2215,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public Vector3 TargetPosition;
         public Quaternion TargetRotation;
         public float TargetPitch;
+        public Quaternion TargetCameraRotation;
+        public int TargetJumpSequence;
+        public bool TargetJumpAirborne;
         public HandPoseState TargetHands;
         public string TargetHeldEntityKey;
+        private int appliedJumpSequence;
 
         public RemotePlayer(Transform transform)
         {
@@ -1343,11 +2239,20 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             InvokeSetSkin(body, skinIndex);
         }
 
-        public void ApplyPitch()
+        public void ApplyLookAndJump()
         {
             if (body != null)
             {
                 InvokeSetCameraPitch(body, TargetPitch);
+                if (TargetJumpSequence > appliedJumpSequence)
+                {
+                    appliedJumpSequence = TargetJumpSequence;
+                }
+
+                if (appliedJumpSequence > 0)
+                {
+                    InvokeApplyRemoteJumpState(body, appliedJumpSequence, TargetJumpAirborne);
+                }
             }
         }
 
@@ -1426,6 +2331,28 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         object value = controller.GetType().GetProperty("CurrentPitch")?.GetValue(controller);
         return value is float pitch ? pitch : 0f;
+    }
+
+    private static Quaternion GetCurrentCameraRotation(Component controller, Transform fallback)
+    {
+        object value = controller?.GetType().GetProperty("CurrentCameraWorldRotation")?.GetValue(controller);
+        return value is Quaternion rotation
+            ? rotation
+            : fallback != null
+                ? fallback.rotation
+                : Quaternion.identity;
+    }
+
+    private static int GetJumpSequence(Component body)
+    {
+        object value = body?.GetType().GetProperty("JumpSequence")?.GetValue(body);
+        return value is int sequence ? sequence : 0;
+    }
+
+    private static bool GetJumpAirborne(Component body)
+    {
+        object value = body?.GetType().GetProperty("IsJumpAirborne")?.GetValue(body);
+        return value is bool isAirborne && isAirborne;
     }
 
     private static HandPoseState GetHandPose(Component body)
@@ -1680,9 +2607,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         wagon?.GetType().GetMethod("PushFromNetwork")?.Invoke(wagon, new object[] { playerPosition, input, deltaTime });
     }
 
+    private static void InvokePushWagonAlongRail(Transform entity, float railInput, float deltaTime)
+    {
+        Component wagon = entity != null ? entity.GetComponent("TinyRailWagon") : null;
+        wagon?.GetType().GetMethod("PushAlongRail")?.Invoke(wagon, new object[] { railInput, deltaTime });
+    }
+
+    private static int InvokeGetWagonPlayerSide(Transform entity, Vector3 playerPosition)
+    {
+        Component wagon = entity != null ? entity.GetComponent("TinyRailWagon") : null;
+        object value = wagon?.GetType().GetMethod("GetPlayerSide", new[] { typeof(Vector3) })?.Invoke(wagon, new object[] { playerPosition });
+        return value is int side ? side : 1;
+    }
+
     private static void SetRigidbodyVelocity(Rigidbody rigidbody, Vector3 velocity)
     {
-        if (rigidbody == null)
+        if (rigidbody == null || rigidbody.isKinematic)
         {
             return;
         }
@@ -1702,6 +2642,38 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private static void InvokeSetCameraPitch(Component body, float pitch)
     {
         body?.GetType().GetMethod("SetCameraPitch")?.Invoke(body, new object[] { pitch });
+    }
+
+    private static void InvokeSetCameraLook(Component body, float pitch, Quaternion cameraRotation)
+    {
+        var method = body?.GetType().GetMethod("SetCameraLook", new[] { typeof(float), typeof(Quaternion) });
+        if (method != null)
+        {
+            method.Invoke(body, new object[] { pitch, cameraRotation });
+            return;
+        }
+
+        InvokeSetCameraPitch(body, pitch);
+    }
+
+    private static void InvokeNotifyJump(Component body)
+    {
+        body?.GetType().GetMethod("NotifyJump")?.Invoke(body, Array.Empty<object>());
+    }
+
+    private static void InvokeApplyRemoteJumpState(Component body, int sequence, bool isAirborne)
+    {
+        var method = body?.GetType().GetMethod("ApplyRemoteJumpState", new[] { typeof(int), typeof(bool) });
+        if (method != null)
+        {
+            method.Invoke(body, new object[] { sequence, isAirborne });
+            return;
+        }
+
+        if (isAirborne)
+        {
+            InvokeNotifyJump(body);
+        }
     }
 
     private static void InvokeApplyRemoteHandPoses(Component body, HandPoseState handPose)

@@ -1,4 +1,6 @@
 using System;
+using System.Globalization;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Animations;
 using UnityEngine.Playables;
@@ -7,6 +9,12 @@ using UnityEngine.Serialization;
 [DisallowMultipleComponent]
 public sealed class TinyRaymanBody : MonoBehaviour
 {
+    private enum MoveAnimationKind
+    {
+        Walk,
+        Strafe
+    }
+
     private enum PlayerSkin
     {
         Vert,
@@ -50,20 +58,31 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     [Header("Head Look")]
     [SerializeField] private bool driveHeadLookWithCamera = true;
-    [SerializeField] private string headLookTransformName = "Head";
+    [SerializeField] private string headLookTransformName = "BonesT\u00EAte";
     [SerializeField] private float headLookPitchInfluence = 0.65f;
     [SerializeField] private float headLookMinPitch = -35f;
     [SerializeField] private float headLookMaxPitch = 45f;
     [SerializeField] private float headLookSharpness = 18f;
+    [SerializeField] private Vector3 headLookLocalEulerAxis = Vector3.right;
 
     [Header("Character Animation")]
     [SerializeField] private bool driveWalkAnimation = true;
+    [SerializeField] private AnimationClip idleAnimationClip;
     [SerializeField] private AnimationClip walkAnimationClip;
+    [SerializeField] private AnimationClip strafeWalkAnimationClip;
+    [SerializeField] private AnimationClip jumpAnimationClip;
     [SerializeField] private RuntimeAnimatorController animatorController;
     [SerializeField] private string animatorWalkingBool = "IsWalking";
+    [SerializeField] private string idleAnimationStateName = "Idle";
     [SerializeField] private string walkAnimationStateName = "walk";
+    [SerializeField] private string strafeWalkAnimationStateName = "StraffWalk";
+    [SerializeField] private string jumpAnimationStateName = "Jump";
+    [SerializeField] private float idleAnimationSpeed = 1f;
     [SerializeField] private float walkAnimationSpeed = 1f;
     [SerializeField] private float walkStopAnimationSpeed = 1f;
+    [SerializeField] private float jumpAnimationSpeed = 1f;
+    [SerializeField] private float airborneVelocityThreshold = 0.08f;
+    [SerializeField, Range(0.01f, 1f)] private float jumpAnimationEndNormalized = 0.65f;
     [SerializeField] private float walkAnimationReferenceSpeed = 1.65f;
     [SerializeField, Range(0f, 1f)] private float walkLoopStartNormalized = 0.22f;
     [SerializeField, Range(0f, 1f)] private float walkLoopEndNormalized = 0.78f;
@@ -84,6 +103,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     [SerializeField] private float followSharpness = 18f;
     [SerializeField] private float limbBobAmount = 0.035f;
     [SerializeField] private float limbSwingAmount = 0.055f;
+    [SerializeField] private float jumpHandLift = 0.055f;
     [SerializeField] private float handGripSharpness = 22f;
     [SerializeField] private float handGripLift = 0.02f;
     [FormerlySerializedAs("attachedHandWorldEulerAngles")]
@@ -113,6 +133,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private Vector3 previousPosition;
     private float moveCycle;
     private bool handsAttached;
+    private bool leftHandAttached;
+    private bool rightHandAttached;
     private Vector3 leftHandAnchor;
     private Vector3 rightHandAnchor;
     private Quaternion attachedLeftHandRotation;
@@ -120,17 +142,30 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private bool attachedHandsSnap;
     private const string CustomModelName = "__Custom_Model";
     private const string CharacterModelName = "Character Model";
+    private float idleAnimationTime;
     private float walkAnimationTime = 1f;
     private bool wasWalking;
-    private bool wasWalkingBackward;
+    private bool wasWalkingReversed;
+    private bool isAirborneAnimationActive;
+    private bool isJumpAnimationActive;
+    private bool airborneHasLeftGround;
+    private bool remoteAirborneOverride;
+    private bool remoteIsAirborne;
+    private float airAnimationTime;
+    private MoveAnimationKind currentMoveAnimationKind = MoveAnimationKind.Walk;
+    private MoveAnimationKind previousMoveAnimationKind = MoveAnimationKind.Walk;
+    private AnimationClip activePlayableClip;
     private PlayableGraph walkGraph;
     private AnimationClipPlayable walkPlayable;
     private Transform headLookTransform;
     private Quaternion headLookBaseLocalRotation = Quaternion.identity;
     private float targetHeadLookPitch;
     private float currentHeadLookPitch;
+    private bool headLookHasPreferredTarget;
+    private bool headLookNeedsAnimatorRefresh;
+    private int jumpSequence;
 
-    public Vector3 HitboxLocalOffset => applyCharacterModelOffsetToHitbox && characterModel != null
+    public Vector3 HitboxLocalOffset => characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
         : Vector3.zero;
 
@@ -182,12 +217,20 @@ public sealed class TinyRaymanBody : MonoBehaviour
         Vector3 flatVelocity = Vector3.ProjectOnPlane(velocity, Vector3.up);
         float flatSpeed = flatVelocity.magnitude;
         float speed01 = Mathf.Clamp01(flatSpeed / 2.2f);
+        float verticalSpeed = velocity.y;
+        bool isGrounded = controller != null && controller.enabled
+            ? controller.isGrounded
+            : Mathf.Abs(verticalSpeed) <= airborneVelocityThreshold;
+
         moveCycle += speed01 * deltaTime * 9f;
         float forwardAmount = flatVelocity.sqrMagnitude > 0.0001f
             ? Vector3.Dot(flatVelocity.normalized, transform.forward)
             : 0f;
+        float strafeAmount = flatVelocity.sqrMagnitude > 0.0001f
+            ? Vector3.Dot(flatVelocity.normalized, transform.right)
+            : 0f;
 
-        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, deltaTime);
+        UpdateCharacterAnimation(speed01, flatSpeed, forwardAmount, strafeAmount, verticalSpeed, isGrounded, deltaTime);
 
         float follow = 1f - Mathf.Exp(-followSharpness * deltaTime);
         UpdateCoreParts(speed01, follow);
@@ -200,6 +243,56 @@ public sealed class TinyRaymanBody : MonoBehaviour
     {
         targetHeadLookPitch = Mathf.Clamp(cameraPitch * headLookPitchInfluence, headLookMinPitch, headLookMaxPitch);
     }
+
+    public void SetCameraLook(float cameraPitch, Quaternion cameraWorldRotation)
+    {
+        SetCameraPitch(cameraPitch);
+    }
+
+    public void NotifyJump()
+    {
+        jumpSequence++;
+        BeginJumpAnimation();
+    }
+
+    public void ApplyRemoteJumpState(int sequence, bool isAirborne)
+    {
+        if (sequence > jumpSequence)
+        {
+            jumpSequence = sequence;
+            BeginJumpAnimation();
+        }
+
+        if (isAirborne && isAirborneAnimationActive)
+        {
+            remoteAirborneOverride = true;
+            remoteIsAirborne = true;
+            return;
+        }
+
+        if (!isAirborne && remoteAirborneOverride)
+        {
+            remoteIsAirborne = false;
+            remoteAirborneOverride = false;
+            isAirborneAnimationActive = false;
+            isJumpAnimationActive = false;
+            airborneHasLeftGround = false;
+            airAnimationTime = 0f;
+        }
+    }
+
+    public bool IsJumpAirborne => isAirborneAnimationActive;
+    public float HandGripLift => handGripLift;
+
+    private void BeginJumpAnimation()
+    {
+        isAirborneAnimationActive = true;
+        isJumpAnimationActive = true;
+        airborneHasLeftGround = false;
+        airAnimationTime = 0f;
+    }
+
+    public int JumpSequence => jumpSequence;
 
     public void SetSkin(int skinIndex)
     {
@@ -270,11 +363,36 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     public void AttachHandsWithLocalOffsets(Vector3 leftAnchor, Vector3 rightAnchor, Quaternion leftBaseRotation, Quaternion rightBaseRotation)
     {
+        AttachHandsWithLocalOffsets(leftAnchor, rightAnchor, leftBaseRotation, rightBaseRotation, true, true);
+    }
+
+    public void AttachHandsWithLocalOffsets(
+        Vector3 leftAnchor,
+        Vector3 rightAnchor,
+        Quaternion leftBaseRotation,
+        Quaternion rightBaseRotation,
+        bool leftActive,
+        bool rightActive,
+        bool snap = false)
+    {
         AttachHands(
             leftAnchor,
             rightAnchor,
-            leftBaseRotation * Quaternion.Euler(attachedLeftHandWorldEulerAngles),
-            rightBaseRotation * Quaternion.Euler(attachedRightHandWorldEulerAngles));
+            GetLeftAttachedHandRotation(leftBaseRotation),
+            GetRightAttachedHandRotation(rightBaseRotation),
+            leftActive,
+            rightActive,
+            snap);
+    }
+
+    public Quaternion GetLeftAttachedHandRotation(Quaternion baseRotation)
+    {
+        return baseRotation * Quaternion.Euler(attachedLeftHandWorldEulerAngles);
+    }
+
+    public Quaternion GetRightAttachedHandRotation(Quaternion baseRotation)
+    {
+        return baseRotation * Quaternion.Euler(attachedRightHandWorldEulerAngles);
     }
 
     public void AttachHands(
@@ -284,7 +402,21 @@ public sealed class TinyRaymanBody : MonoBehaviour
         Quaternion rightWorldRotation,
         bool snap)
     {
-        handsAttached = true;
+        AttachHands(leftAnchor, rightAnchor, leftWorldRotation, rightWorldRotation, true, true, snap);
+    }
+
+    public void AttachHands(
+        Vector3 leftAnchor,
+        Vector3 rightAnchor,
+        Quaternion leftWorldRotation,
+        Quaternion rightWorldRotation,
+        bool leftActive,
+        bool rightActive,
+        bool snap = false)
+    {
+        handsAttached = leftActive || rightActive;
+        leftHandAttached = leftActive;
+        rightHandAttached = rightActive;
         leftHandAnchor = leftAnchor + Vector3.up * handGripLift;
         rightHandAnchor = rightAnchor + Vector3.up * handGripLift;
         attachedLeftHandRotation = leftWorldRotation;
@@ -295,6 +427,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
     public void ReleaseHands()
     {
         handsAttached = false;
+        leftHandAttached = false;
+        rightHandAttached = false;
         attachedHandsSnap = false;
     }
 
@@ -385,7 +519,6 @@ public sealed class TinyRaymanBody : MonoBehaviour
         EnsureCustomModel(modelRoot, characterModel, Vector3.zero, Vector3.zero, Vector3.one);
         ConfigureCharacterRenderers(modelRoot);
         ApplyCharacterSkin();
-        ResolveHeadLookTransform();
         characterAnimator = modelRoot.GetComponentInChildren<Animator>(true);
         if (characterAnimator == null)
         {
@@ -405,6 +538,8 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         SetupWalkPlayable();
         characterAnimator.Update(0f);
+        ResolveHeadLookTransform();
+        headLookNeedsAnimatorRefresh = true;
         return modelRoot;
     }
 
@@ -508,9 +643,15 @@ public sealed class TinyRaymanBody : MonoBehaviour
     private void ResolveHeadLookTransform()
     {
         headLookTransform = null;
+        headLookHasPreferredTarget = false;
         if (characterModelRoot != null)
         {
-            headLookTransform = FindTransformByName(characterModelRoot, headLookTransformName);
+            headLookTransform = FindPreferredHeadLookTransform(characterModelRoot);
+            headLookHasPreferredTarget = headLookTransform != null;
+            if (headLookTransform == null)
+            {
+                headLookTransform = FindTransformByName(characterModelRoot, headLookTransformName);
+            }
             if (headLookTransform == null)
             {
                 headLookTransform = FindTransformByName(characterModelRoot, "head");
@@ -527,6 +668,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
         else
         {
             headLookTransform = head;
+            headLookHasPreferredTarget = true;
         }
 
         headLookBaseLocalRotation = headLookTransform != null
@@ -633,15 +775,22 @@ public sealed class TinyRaymanBody : MonoBehaviour
         MoveLocal(head, new Vector3(0f, 0.36f + bodyBob * 0.5f, 0.08f), follow);
     }
 
-    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float deltaTime)
+    private void UpdateCharacterAnimation(float speed01, float flatSpeed, float forwardAmount, float strafeAmount, float verticalSpeed, bool isGrounded, float deltaTime)
     {
         if (!driveWalkAnimation || characterAnimator == null)
         {
             return;
         }
 
+        if (TryPlayAirAnimation(verticalSpeed, isGrounded, deltaTime))
+        {
+            return;
+        }
+
         bool isWalking = speed01 > walkAnimationMoveThreshold;
-        bool isWalkingBackward = isWalking && forwardAmount < -0.2f;
+        bool useStrafeAnimation = isWalking && Mathf.Abs(strafeAmount) > Mathf.Abs(forwardAmount) && Mathf.Abs(strafeAmount) > 0.2f;
+        currentMoveAnimationKind = useStrafeAnimation ? MoveAnimationKind.Strafe : MoveAnimationKind.Walk;
+        bool isAnimationReversed = isWalking && (useStrafeAnimation ? strafeAmount < -0.2f : forwardAmount < -0.2f);
         float loopStart = Mathf.Clamp01(walkLoopStartNormalized);
         float loopEnd = Mathf.Clamp(walkLoopEndNormalized, loopStart + 0.01f, 1f);
         float stopStart = Mathf.Clamp(walkStopStartNormalized, loopStart, 1f);
@@ -652,12 +801,12 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
         if (isWalking)
         {
-            if (!wasWalking || wasWalkingBackward != isWalkingBackward)
+            if (!wasWalking || wasWalkingReversed != isAnimationReversed || previousMoveAnimationKind != currentMoveAnimationKind)
             {
-                walkAnimationTime = isWalkingBackward ? loopEnd : 0f;
+                walkAnimationTime = isAnimationReversed ? loopEnd : 0f;
             }
 
-            if (isWalkingBackward)
+            if (isAnimationReversed)
             {
                 walkAnimationTime -= loopTimeStep;
                 if (walkAnimationTime <= loopStart)
@@ -686,35 +835,207 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         wasWalking = isWalking;
-        wasWalkingBackward = isWalkingBackward;
-        if (animatorController != null && !string.IsNullOrEmpty(walkAnimationStateName))
+        wasWalkingReversed = isAnimationReversed;
+        previousMoveAnimationKind = currentMoveAnimationKind;
+
+        if (!isWalking && walkAnimationTime >= 1f && TryPlayIdleAnimation(deltaTime))
+        {
+            return;
+        }
+
+        string stateName = GetCurrentAnimationStateName();
+        if (animatorController != null && !string.IsNullOrEmpty(stateName))
         {
             characterAnimator.SetBool(animatorWalkingBool, isWalking);
-            characterAnimator.Play(walkAnimationStateName, 0, walkAnimationTime);
+            characterAnimator.Play(stateName, 0, walkAnimationTime);
             characterAnimator.Update(0f);
             return;
         }
 
-        if (!walkGraph.IsValid() || !walkPlayable.IsValid() || walkAnimationClip == null)
+        AnimationClip clip = GetCurrentAnimationClip();
+        if (clip == null)
         {
             return;
         }
 
-        walkPlayable.SetTime(Mathf.Clamp01(walkAnimationTime) * walkAnimationClip.length);
+        EnsureWalkPlayable(clip);
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid())
+        {
+            return;
+        }
+
+        walkPlayable.SetTime(Mathf.Clamp01(walkAnimationTime) * clip.length);
         walkGraph.Evaluate(0f);
+    }
+
+    private bool TryPlayAirAnimation(float verticalSpeed, bool isGrounded, float deltaTime)
+    {
+        bool effectiveGrounded = remoteAirborneOverride ? !remoteIsAirborne : isGrounded;
+        bool shouldBeAirborne = isAirborneAnimationActive;
+        if (!effectiveGrounded)
+        {
+            airborneHasLeftGround = true;
+        }
+
+        if (!shouldBeAirborne && !isAirborneAnimationActive)
+        {
+            return false;
+        }
+
+        if (effectiveGrounded && airborneHasLeftGround && isAirborneAnimationActive)
+        {
+            isAirborneAnimationActive = false;
+            isJumpAnimationActive = false;
+            airborneHasLeftGround = false;
+            remoteAirborneOverride = false;
+            remoteIsAirborne = false;
+            airAnimationTime = 0f;
+            return false;
+        }
+
+        if (!isAirborneAnimationActive)
+        {
+            return false;
+        }
+
+        float jumpEnd = Mathf.Clamp01(jumpAnimationEndNormalized);
+        if (!HasJumpAnimation())
+        {
+            isAirborneAnimationActive = false;
+            isJumpAnimationActive = false;
+            airAnimationTime = 0f;
+            return false;
+        }
+
+        string stateName = jumpAnimationStateName;
+        AnimationClip clip = jumpAnimationClip;
+        float speed = jumpAnimationSpeed;
+
+        if (string.IsNullOrEmpty(stateName) && clip == null)
+        {
+            return false;
+        }
+
+        airAnimationTime = Mathf.Min(jumpEnd, airAnimationTime + deltaTime * Mathf.Max(0.01f, speed));
+        isJumpAnimationActive = airAnimationTime < jumpEnd;
+
+        wasWalking = false;
+        walkAnimationTime = 1f;
+
+        if (animatorController != null && !string.IsNullOrEmpty(stateName))
+        {
+            characterAnimator.SetBool(animatorWalkingBool, false);
+            characterAnimator.Play(stateName, 0, airAnimationTime);
+            characterAnimator.Update(0f);
+            return true;
+        }
+
+        if (clip == null)
+        {
+            return false;
+        }
+
+        EnsureWalkPlayable(clip);
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid())
+        {
+            return false;
+        }
+
+        walkPlayable.SetTime(Mathf.Clamp01(airAnimationTime) * clip.length);
+        walkGraph.Evaluate(0f);
+        return true;
+    }
+
+    private bool HasJumpAnimation()
+    {
+        return animatorController != null
+            ? !string.IsNullOrEmpty(jumpAnimationStateName)
+            : jumpAnimationClip != null;
+    }
+
+    private bool TryPlayIdleAnimation(float deltaTime)
+    {
+        if (idleAnimationClip == null && string.IsNullOrEmpty(idleAnimationStateName))
+        {
+            return false;
+        }
+
+        idleAnimationTime = Mathf.Repeat(
+            idleAnimationTime + deltaTime * Mathf.Max(0.01f, idleAnimationSpeed),
+            1f);
+
+        if (animatorController != null && !string.IsNullOrEmpty(idleAnimationStateName))
+        {
+            characterAnimator.SetBool(animatorWalkingBool, false);
+            characterAnimator.Play(idleAnimationStateName, 0, idleAnimationTime);
+            characterAnimator.Update(0f);
+            return true;
+        }
+
+        if (idleAnimationClip == null)
+        {
+            return false;
+        }
+
+        EnsureWalkPlayable(idleAnimationClip);
+        if (!walkGraph.IsValid() || !walkPlayable.IsValid())
+        {
+            return false;
+        }
+
+        walkPlayable.SetTime(idleAnimationTime * idleAnimationClip.length);
+        walkGraph.Evaluate(0f);
+        return true;
+    }
+
+    private AnimationClip GetCurrentAnimationClip()
+    {
+        if (currentMoveAnimationKind == MoveAnimationKind.Strafe && strafeWalkAnimationClip != null)
+        {
+            return strafeWalkAnimationClip;
+        }
+
+        return walkAnimationClip;
+    }
+
+    private string GetCurrentAnimationStateName()
+    {
+        if (currentMoveAnimationKind == MoveAnimationKind.Strafe && !string.IsNullOrEmpty(strafeWalkAnimationStateName))
+        {
+            return strafeWalkAnimationStateName;
+        }
+
+        return walkAnimationStateName;
     }
 
     private void SetupWalkPlayable()
     {
         DestroyWalkGraph();
-        if (walkAnimationClip == null || characterAnimator == null || animatorController != null)
+        if (characterAnimator == null || animatorController != null)
         {
             return;
         }
 
+        EnsureWalkPlayable(idleAnimationClip != null ? idleAnimationClip : walkAnimationClip);
+    }
+
+    private void EnsureWalkPlayable(AnimationClip clip)
+    {
+        if (clip == null || characterAnimator == null || animatorController != null)
+        {
+            return;
+        }
+
+        if (walkGraph.IsValid() && walkPlayable.IsValid() && activePlayableClip == clip)
+        {
+            return;
+        }
+
+        DestroyWalkGraph();
+        activePlayableClip = clip;
         walkGraph = PlayableGraph.Create("Tiny Character Walk");
         walkGraph.SetTimeUpdateMode(DirectorUpdateMode.Manual);
-        walkPlayable = AnimationClipPlayable.Create(walkGraph, walkAnimationClip);
+        walkPlayable = AnimationClipPlayable.Create(walkGraph, clip);
         walkPlayable.SetApplyFootIK(false);
         walkPlayable.SetSpeed(0f);
 
@@ -729,31 +1050,79 @@ public sealed class TinyRaymanBody : MonoBehaviour
         {
             walkGraph.Destroy();
         }
+
+        activePlayableClip = null;
     }
 
     private void UpdateHands(float speed01, float follow, float deltaTime)
     {
+        float leftPhase = Mathf.Sin(moveCycle);
+        float rightPhase = Mathf.Sin(moveCycle + Mathf.PI);
+        float airborneHandOffset = GetAirborneHandOffset();
+        Vector3 freeLeftHandPosition = new Vector3(-0.17f, 0.24f + airborneHandOffset + leftPhase * limbBobAmount * speed01, 0.1f + leftPhase * limbSwingAmount * speed01);
+        Vector3 freeRightHandPosition = new Vector3(0.17f, 0.24f + airborneHandOffset + rightPhase * limbBobAmount * speed01, 0.1f + rightPhase * limbSwingAmount * speed01);
+
         if (handsAttached)
         {
             if (attachedHandsSnap)
             {
-                SetWorld(leftHand, leftHandAnchor, attachedLeftHandRotation);
-                SetWorld(rightHand, rightHandAnchor, attachedRightHandRotation);
+                if (leftHandAttached)
+                {
+                    SetWorld(leftHand, leftHandAnchor, attachedLeftHandRotation);
+                }
+                else
+                {
+                    MoveLocal(leftHand, freeLeftHandPosition, follow);
+                }
+
+                if (rightHandAttached)
+                {
+                    SetWorld(rightHand, rightHandAnchor, attachedRightHandRotation);
+                }
+                else
+                {
+                    MoveLocal(rightHand, freeRightHandPosition, follow);
+                }
+
                 return;
             }
 
             float gripFollow = 1f - Mathf.Exp(-handGripSharpness * deltaTime);
-            MoveWorld(leftHand, leftHandAnchor, gripFollow);
-            MoveWorld(rightHand, rightHandAnchor, gripFollow);
-            RotateWorld(leftHand, attachedLeftHandRotation, gripFollow);
-            RotateWorld(rightHand, attachedRightHandRotation, gripFollow);
+            if (leftHandAttached)
+            {
+                MoveWorld(leftHand, leftHandAnchor, gripFollow);
+                RotateWorld(leftHand, attachedLeftHandRotation, gripFollow);
+            }
+            else
+            {
+                MoveLocal(leftHand, freeLeftHandPosition, follow);
+            }
+
+            if (rightHandAttached)
+            {
+                MoveWorld(rightHand, rightHandAnchor, gripFollow);
+                RotateWorld(rightHand, attachedRightHandRotation, gripFollow);
+            }
+            else
+            {
+                MoveLocal(rightHand, freeRightHandPosition, follow);
+            }
+
             return;
         }
 
-        float leftPhase = Mathf.Sin(moveCycle);
-        float rightPhase = Mathf.Sin(moveCycle + Mathf.PI);
-        MoveLocal(leftHand, new Vector3(-0.17f, 0.24f + leftPhase * limbBobAmount * speed01, 0.1f + leftPhase * limbSwingAmount * speed01), follow);
-        MoveLocal(rightHand, new Vector3(0.17f, 0.24f + rightPhase * limbBobAmount * speed01, 0.1f + rightPhase * limbSwingAmount * speed01), follow);
+        MoveLocal(leftHand, freeLeftHandPosition, follow);
+        MoveLocal(rightHand, freeRightHandPosition, follow);
+    }
+
+    private float GetAirborneHandOffset()
+    {
+        if (!isAirborneAnimationActive)
+        {
+            return 0f;
+        }
+
+        return Mathf.Sin(Mathf.Clamp01(airAnimationTime) * Mathf.PI * 0.5f) * jumpHandLift;
     }
 
     private void UpdateFeet(float speed01, float follow)
@@ -778,18 +1147,32 @@ public sealed class TinyRaymanBody : MonoBehaviour
             return;
         }
 
-        if (headLookTransform == null)
+        if (headLookNeedsAnimatorRefresh || headLookTransform == null)
         {
             ResolveHeadLookTransform();
+            headLookNeedsAnimatorRefresh = characterModelRoot != null && !headLookHasPreferredTarget;
             if (headLookTransform == null)
             {
                 return;
             }
         }
+        else if (characterModelRoot != null && !headLookHasPreferredTarget)
+        {
+            Transform preferredTarget = FindPreferredHeadLookTransform(characterModelRoot);
+            if (preferredTarget != null)
+            {
+                headLookTransform = preferredTarget;
+                headLookHasPreferredTarget = true;
+                headLookBaseLocalRotation = headLookTransform.localRotation;
+            }
+        }
 
         float follow = 1f - Mathf.Exp(-headLookSharpness * deltaTime);
         currentHeadLookPitch = Mathf.Lerp(currentHeadLookPitch, targetHeadLookPitch, follow);
-        headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(currentHeadLookPitch, 0f, 0f);
+        Vector3 axis = headLookLocalEulerAxis.sqrMagnitude > 0.0001f
+            ? headLookLocalEulerAxis.normalized
+            : Vector3.right;
+        headLookTransform.localRotation = headLookBaseLocalRotation * Quaternion.Euler(axis * currentHeadLookPitch);
     }
 
     private static void MoveLocal(Transform target, Vector3 localPosition, float follow)
@@ -846,6 +1229,115 @@ public sealed class TinyRaymanBody : MonoBehaviour
         }
 
         return null;
+    }
+
+    private static Transform FindPreferredHeadLookTransform(Transform root)
+    {
+        Transform target = FindExactTransformByName(root, "BonesT\u00EAte");
+        if (target != null)
+        {
+            return target;
+        }
+
+        target = FindExactTransformByName(root, "BonesTete");
+        if (target != null)
+        {
+            return target;
+        }
+
+        target = FindNormalizedTransformByName(root, "BonesTete");
+        return target != null ? target : FindTransformByPrefix(root, "BonesT");
+    }
+
+    private static Transform FindExactTransformByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        if (root.name.Equals(name, StringComparison.OrdinalIgnoreCase))
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindExactTransformByName(root.GetChild(i), name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static Transform FindNormalizedTransformByName(Transform root, string name)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        string normalizedName = NormalizeTransformName(name);
+        if (NormalizeTransformName(root.name) == normalizedName)
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindNormalizedTransformByName(root.GetChild(i), name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static Transform FindTransformByPrefix(Transform root, string prefix)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(prefix))
+        {
+            return null;
+        }
+
+        if (root.name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform result = FindTransformByPrefix(root.GetChild(i), prefix);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static string NormalizeTransformName(string value)
+    {
+        string normalized = value.Normalize(NormalizationForm.FormD);
+        char[] buffer = new char[normalized.Length];
+        int count = 0;
+        for (int i = 0; i < normalized.Length; i++)
+        {
+            UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(normalized[i]);
+            if (category != UnicodeCategory.NonSpacingMark && char.IsLetterOrDigit(normalized[i]))
+            {
+                buffer[count] = char.ToLowerInvariant(normalized[i]);
+                count++;
+            }
+        }
+
+        return new string(buffer, 0, count);
     }
 
     private static void SetWorld(Transform target, Vector3 worldPosition, Quaternion worldRotation)
