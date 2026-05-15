@@ -6612,10 +6612,10 @@ MonoBehaviour:
   handAnchorWidth: 0.227
   leftHandActive: 1
   rightHandActive: 1
-  leftHandGripLocalOffset: {x: 0.02, y: 0.46, z: 0}
-  rightHandGripLocalOffset: {x: -0.48, y: -0.42, z: -0.5}
-  leftHandGripEulerAngles: {x: -135, y: -5, z: -22}
-  rightHandGripEulerAngles: {x: -102.4, y: 40.3, z: 21.2}
+  leftHandGripLocalOffset: {x: 0.04, y: 0.46, z: -0.05}
+  rightHandGripLocalOffset: {x: -0.37, y: -0.4, z: -0.51}
+  leftHandGripEulerAngles: {x: -116.1, y: -8.84, z: -15.7}
+  rightHandGripEulerAngles: {x: -114.3, y: 40.3, z: 21.2}
   configurePhysics: 1
   syncMassWithWeight: 1
   solverIterations: 12

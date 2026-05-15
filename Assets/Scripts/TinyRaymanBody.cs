@@ -282,6 +282,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     }
 
     public bool IsJumpAirborne => isAirborneAnimationActive;
+    public float HandGripLift => handGripLift;
 
     private void BeginJumpAnimation()
     {

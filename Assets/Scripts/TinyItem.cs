@@ -229,9 +229,8 @@ public sealed class TinyItem : MonoBehaviour
 
     public void GetHandAnchors(Transform playerRoot, out Vector3 leftAnchor, out Vector3 rightAnchor)
     {
-        Bounds bounds = GetWorldBounds();
         Vector3 side = transform.right;
-        Vector3 center = bounds.center;
+        Vector3 center = transform.TransformPoint(GetStableLocalBoundsCenter());
         float halfWidth = Mathf.Max(handAnchorWidth * 0.5f, 0.04f);
 
         leftAnchor = center - side * halfWidth + transform.TransformVector(leftHandGripLocalOffset);
@@ -260,6 +259,53 @@ public sealed class TinyItem : MonoBehaviour
         }
 
         return bounds;
+    }
+
+    private Vector3 GetStableLocalBoundsCenter()
+    {
+        Renderer[] renderers = GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0)
+        {
+            return Vector3.zero;
+        }
+
+        Bounds localBounds = default;
+        bool hasBounds = false;
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            Renderer itemRenderer = renderers[i];
+            if (itemRenderer == null)
+            {
+                continue;
+            }
+
+            Bounds rendererBounds = itemRenderer.localBounds;
+            Vector3 min = rendererBounds.min;
+            Vector3 max = rendererBounds.max;
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(min.x, min.y, min.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(min.x, min.y, max.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(min.x, max.y, min.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(min.x, max.y, max.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(max.x, min.y, min.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(max.x, min.y, max.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(max.x, max.y, min.z)));
+            EncapsulateLocalPoint(ref localBounds, ref hasBounds, itemRenderer.transform.TransformPoint(new Vector3(max.x, max.y, max.z)));
+        }
+
+        return hasBounds ? localBounds.center : Vector3.zero;
+    }
+
+    private void EncapsulateLocalPoint(ref Bounds localBounds, ref bool hasBounds, Vector3 worldPoint)
+    {
+        Vector3 localPoint = transform.InverseTransformPoint(worldPoint);
+        if (!hasBounds)
+        {
+            localBounds = new Bounds(localPoint, Vector3.zero);
+            hasBounds = true;
+            return;
+        }
+
+        localBounds.Encapsulate(localPoint);
     }
 
     private void CachePhysics()

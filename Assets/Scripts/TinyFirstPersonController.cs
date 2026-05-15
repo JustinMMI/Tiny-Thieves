@@ -166,7 +166,9 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         if (isGrabbingItem)
         {
-            ApplyCameraHeight(false);
+            Move();
+            UpdateCrouch();
+            UpdateCameraBob();
             return;
         }
 
@@ -587,6 +589,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         heldItem.GetHandAnchors(transform, out Vector3 itemLeftAnchor, out Vector3 itemRightAnchor);
         heldItem.GetHandRotations(transform, out Quaternion itemLeftRotation, out Quaternion itemRightRotation);
+        RemoveItemHandGripLift(heldItem, ref itemLeftAnchor, ref itemRightAnchor);
 
         bool itemUsesLeftHand = heldItem.LeftHandActive;
         bool itemUsesRightHand = heldItem.RightHandActive;
@@ -600,6 +603,25 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             : raymanBody.GetRightAttachedHandRotation(route.RightHandRotation);
 
         raymanBody.AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation);
+    }
+
+    private void RemoveItemHandGripLift(TinyItem item, ref Vector3 leftAnchor, ref Vector3 rightAnchor)
+    {
+        if (item == null || raymanBody == null)
+        {
+            return;
+        }
+
+        Vector3 lift = Vector3.up * raymanBody.HandGripLift;
+        if (item.LeftHandActive)
+        {
+            leftAnchor -= lift;
+        }
+
+        if (item.RightHandActive)
+        {
+            rightAnchor -= lift;
+        }
     }
 
     private static float SmootherStep(float t)
@@ -785,12 +807,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         isGrabbingItem = true;
         focusedItem = null;
         focusedWagon = null;
-        horizontalVelocity = Vector3.zero;
-        verticalVelocity = 0f;
 
         EnsureItemHoldPoint();
         item.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
         item.GetHandRotations(transform, out Quaternion leftRotation, out Quaternion rightRotation);
+        RemoveItemHandGripLift(item, ref leftAnchor, ref rightAnchor);
 
         float handElapsed = 0f;
         while (handElapsed < itemGrabHandDuration)
@@ -922,6 +943,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         heldItem.GetHandAnchors(transform, out Vector3 leftAnchor, out Vector3 rightAnchor);
         heldItem.GetHandRotations(transform, out Quaternion leftRotation, out Quaternion rightRotation);
+        RemoveItemHandGripLift(heldItem, ref leftAnchor, ref rightAnchor);
         raymanBody.AttachHands(
             leftAnchor,
             rightAnchor,
