@@ -6,7 +6,6 @@ public class PlayerHealth : MonoBehaviour
     [SerializeField] private int PV = 100;
     [SerializeField] private string DeadScene = "DeadScene";
 
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
     {
     }
@@ -16,9 +15,8 @@ public class PlayerHealth : MonoBehaviour
         PV -= damageAmount;
         if (PV <= 0)
         {
-            // Handle player death here
             Debug.Log("Player is dead!");
-            SceneManager.LoadScene(DeadScene); // Reload the current scene
+            SceneManager.LoadScene(DeadScene); // Load DeadScene
         }
     }
 
@@ -27,7 +25,6 @@ public class PlayerHealth : MonoBehaviour
         PV += healAmount;
     }
 
-    // Update is called once per frame
     void Update()
     {
         
