@@ -11042,59 +11042,59 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 298063526}
     m_Modifications:
-    - target: {fileID: 448466448730181446, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 448466448730181446, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_Name
       value: lantern
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalScale.x
       value: 0.22
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalScale.y
       value: 0.22
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalScale.z
       value: 0.22
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalPosition.y
       value: -0.258
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalPosition.z
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalRotation.w
       value: 1
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalRotation.x
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalRotation.y
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalRotation.z
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalEulerAnglesHint.x
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalEulerAnglesHint.y
       value: 0
       objectReference: {fileID: 0}
-    - target: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+    - target: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
       propertyPath: m_LocalEulerAnglesHint.z
       value: 0
       objectReference: {fileID: 0}
@@ -11102,10 +11102,10 @@ PrefabInstance:
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
     m_AddedComponents: []
-  m_SourcePrefab: {fileID: 100100000, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+  m_SourcePrefab: {fileID: 100100000, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
 --- !u!4 &2014474148 stripped
 Transform:
-  m_CorrespondingSourceObject: {fileID: 969001210060084732, guid: 0aaf2fbef42c881489bde68bea57a26a, type: 3}
+  m_CorrespondingSourceObject: {fileID: 969001210060084732, guid: aa15ee789a15be44cb7d61687c6e9876, type: 3}
   m_PrefabInstance: {fileID: 2014474147}
   m_PrefabAsset: {fileID: 0}
 --- !u!1001 &2022833602
@@ -11686,13 +11686,24 @@ MonoBehaviour:
   headLookMinPitch: -35
   headLookMaxPitch: 45
   headLookSharpness: 18
+  headLookLocalEulerAxis: {x: 1, y: 0, z: 0}
   driveWalkAnimation: 1
+  idleAnimationClip: {fileID: 0}
   walkAnimationClip: {fileID: 7400000, guid: 5e4e375b056790243a2beb703ab0334b, type: 2}
+  strafeWalkAnimationClip: {fileID: 0}
+  jumpAnimationClip: {fileID: 0}
   animatorController: {fileID: 9100000, guid: b777d9413bf17a749b7f4d62781e3cd8, type: 2}
   animatorWalkingBool: IsWalking
+  idleAnimationStateName: Idle
   walkAnimationStateName: Walk
+  strafeWalkAnimationStateName: StraffWalk
+  jumpAnimationStateName: Jump
+  idleAnimationSpeed: 1
   walkAnimationSpeed: 0.15
   walkStopAnimationSpeed: 1
+  jumpAnimationSpeed: 1
+  airborneVelocityThreshold: 0.08
+  jumpAnimationEndNormalized: 0.65
   walkAnimationReferenceSpeed: 1.65
   walkLoopStartNormalized: 0.2
   walkLoopEndNormalized: 0.98
@@ -11709,6 +11720,7 @@ MonoBehaviour:
   followSharpness: 18
   limbBobAmount: 0.035
   limbSwingAmount: 0.055
+  jumpHandLift: 0.055
   handGripSharpness: 22
   handGripLift: 0.02
   attachedLeftHandWorldEulerAngles: {x: 180, y: -90, z: 70}
