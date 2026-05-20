@@ -2,6 +2,8 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 using TMPro;
+using UnityEngine.EventSystems;
+using UnityEngine.InputSystem;
 
 public sealed class TinyMenuUI : MonoBehaviour
 {
@@ -71,12 +73,24 @@ public sealed class TinyMenuUI : MonoBehaviour
     private int runtimeSkinPreviewWidth;
     private int runtimeSkinPreviewHeight;
 
+    // Tracks which panel is currently active for focus recovery and Cancel navigation.
+    private GameObject activePanel;
+
     private void Awake()
     {
         ConfigureCanvasScaler();
         ResolveOptionalPanels();
         BindButtons();
+        EnsureNavigationManager();
         ShowMainMenu();
+    }
+
+    private void EnsureNavigationManager()
+    {
+        if (UINavigationManager.Instance == null)
+        {
+            gameObject.AddComponent<UINavigationManager>();
+        }
     }
 
     private void Update()
@@ -84,6 +98,8 @@ public sealed class TinyMenuUI : MonoBehaviour
         RefreshLobby();
         RefreshJoinFlow();
         RefreshSkinPanel();
+        HandleCancelNavigation();
+        RecoverLostFocus();
     }
 
     private void OnDestroy()
@@ -107,6 +123,8 @@ public sealed class TinyMenuUI : MonoBehaviour
         SetGameplayVisible(!hideGameplayUntilStarted);
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
+        activePanel = mainMenuPanel;
+        UINavigationManager.Instance?.FocusPanel(mainMenuPanel);
     }
 
     public void HostGame()
@@ -134,6 +152,8 @@ public sealed class TinyMenuUI : MonoBehaviour
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
         RefreshLobby();
+        activePanel = lobbyPanel;
+        UINavigationManager.Instance?.FocusPanel(lobbyPanel);
     }
 
     public void LeaveLobby()
@@ -160,6 +180,7 @@ public sealed class TinyMenuUI : MonoBehaviour
 
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
+        UINavigationManager.Instance?.ClearSelection();
     }
 
     public void ShowSettings()
@@ -170,6 +191,8 @@ public sealed class TinyMenuUI : MonoBehaviour
         SetPanel(partySettingsPanel, false);
         SetPanel(creditsPanel, false);
         SetSkinPreviewCameraVisible(false);
+        activePanel = settingsPanel;
+        UINavigationManager.Instance?.FocusPanel(settingsPanel);
     }
 
     public void ShowPartySettings()
@@ -189,6 +212,8 @@ public sealed class TinyMenuUI : MonoBehaviour
         ConfigureSkinPreviewCamera();
         SetSkinPreviewCameraVisible(true);
         RefreshSkinPanel();
+        activePanel = partySettingsPanel;
+        UINavigationManager.Instance?.FocusPanel(partySettingsPanel);
     }
 
     public void ShowCredits()
@@ -199,6 +224,8 @@ public sealed class TinyMenuUI : MonoBehaviour
         SetPanel(partySettingsPanel, false);
         SetPanel(creditsPanel, true);
         SetSkinPreviewCameraVisible(false);
+        activePanel = creditsPanel;
+        UINavigationManager.Instance?.FocusPanel(creditsPanel);
     }
 
     public void CopyLobbyCode()
@@ -242,11 +269,50 @@ public sealed class TinyMenuUI : MonoBehaviour
             SetPanel(lobbyPanel, true);
             SetPanel(mainMenuPanel, false);
             RefreshLobby();
+            activePanel = lobbyPanel;
+            UINavigationManager.Instance?.FocusPanel(lobbyPanel);
             return;
         }
 
         SetPanel(mainMenuPanel, true);
         SetPanel(lobbyPanel, false);
+        activePanel = mainMenuPanel;
+        UINavigationManager.Instance?.FocusPanel(mainMenuPanel);
+    }
+
+    // Allows the player to press Escape/Cancel to navigate back from sub-panels.
+    private void HandleCancelNavigation()
+    {
+        if (gameStarted)
+        {
+            return;
+        }
+
+        bool cancelPressed = Keyboard.current != null && Keyboard.current.escapeKey.wasPressedThisFrame;
+        if (!cancelPressed)
+        {
+            return;
+        }
+
+        if (activePanel == creditsPanel)
+        {
+            ShowMainMenu();
+        }
+        else if (activePanel == settingsPanel)
+        {
+            HideSettings();
+        }
+        else if (activePanel == partySettingsPanel)
+        {
+            ShowLobby();
+        }
+    }
+
+    // Restores keyboard focus to the active panel when the EventSystem has lost its selection.
+    // The manager handles the mouse-mode guard internally.
+    private void RecoverLostFocus()
+    {
+        UINavigationManager.Instance?.RecoverLostFocus();
     }
 
     private void RefreshJoinFlow()
