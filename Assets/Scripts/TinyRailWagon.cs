@@ -130,6 +130,21 @@ public sealed class TinyRailWagon : MonoBehaviour
         return targetPosition - previousPosition;
     }
 
+    public Vector3 PushAlongRail(float railInput, float deltaTime)
+    {
+        if (railPath == null || Mathf.Abs(railInput) < 0.01f)
+        {
+            return Vector3.zero;
+        }
+
+        Vector3 previousPosition = GetReferencePosition();
+        float previousDistance = distanceOnRail;
+        distanceOnRail = railPath.ClampDistance(distanceOnRail + railInput * pushSpeed * deltaTime);
+        RotateWheels(distanceOnRail - previousDistance);
+        Vector3 targetPosition = ApplyRailPose(false);
+        return targetPosition - previousPosition;
+    }
+
     public Vector3 GetPlayerFollowPosition(Transform player)
     {
         int side = GetPlayerSide(player);
