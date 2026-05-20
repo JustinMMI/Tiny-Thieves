@@ -6,8 +6,8 @@ public class EnnemyControler : MonoBehaviour
     [Header("Stats")]
     [SerializeField] private int damage = 25;
     [SerializeField] private float detectionRange = 2f;
-    [SerializeField] private LayerMask obstacleMask; // couches considérées comme murs
-    [SerializeField] private float loseSightTime = 5f; // secondes avant d'abandonner la poursuite
+    [SerializeField] private LayerMask obstacleMask;
+    [SerializeField] private float loseSightTime = 5f;
 
     [Header("Mouvement Aléatoire")]
     [SerializeField] private float wanderRadius = 8f;
@@ -16,10 +16,9 @@ public class EnnemyControler : MonoBehaviour
     private NavMeshAgent m_Agent;
     private Animator m_Animator;
     private Transform m_Player;
-    [SerializeField] private float m_Timer;
-    private bool isChasing = false;
-    private float chaseLostTimer = 0f;
-    private Vector3 lastKnownPosition;
+    private float m_Timer;
+    private float m_LostSightTimer;
+    private bool m_IsChasing;
 
     void Start()
     {
@@ -38,17 +37,26 @@ public class EnnemyControler : MonoBehaviour
 
         float distanceToPlayer = Vector3.Distance(transform.position, m_Player.position);
 
-        bool hasLOS = HasLineOfSight();
-
-        if (distanceToPlayer <= detectionRange && hasLOS)
+        if (distanceToPlayer <= detectionRange && HasLineOfSight())
         {
-            StartChase();
-            lastKnownPosition = m_Player.position;
+            m_IsChasing = true;
+            m_LostSightTimer = 0f;
+            if (m_Animator != null) m_Animator.SetBool("isAttacking", true);
+            m_Agent.SetDestination(m_Player.position);
         }
-        else if (isChasing)
+        else if (m_IsChasing)
         {
-            // Si on était en poursuite mais on a perdu la ligne de vue
-            HandleLostSight();
+            m_LostSightTimer += Time.deltaTime;
+            m_Agent.SetDestination(m_Player.position);
+
+            if (m_LostSightTimer >= loseSightTime)
+            {
+                m_IsChasing = false;
+                m_LostSightTimer = 0f;
+                if (m_Animator != null) m_Animator.SetBool("isAttacking", false);
+                m_Timer = wanderTimer;
+                m_Agent.ResetPath();
+            }
         }
         else
         {
@@ -75,42 +83,6 @@ public class EnnemyControler : MonoBehaviour
         }
     }
 
-    void ChasePlayer()
-    {
-        if (m_Animator != null) m_Animator.SetBool("isAttacking", true);
-        m_Agent.SetDestination(m_Player.position);
-    }
-
-    void StartChase()
-    {
-        isChasing = true;
-        chaseLostTimer = 0f;
-        if (m_Animator != null) m_Animator.SetBool("isAttacking", true);
-        m_Agent.SetDestination(m_Player.position);
-    }
-
-    void HandleLostSight()
-    {
-        // Aller vérifier la dernière position connue, puis abandonner après le délai
-        chaseLostTimer += Time.deltaTime;
-        m_Agent.SetDestination(lastKnownPosition);
-
-        if ((!m_Agent.pathPending && m_Agent.remainingDistance <= m_Agent.stoppingDistance + 0.2f) || chaseLostTimer >= loseSightTime)
-        {
-            StopChaseAndResumePatrol();
-        }
-    }
-
-    void StopChaseAndResumePatrol()
-    {
-        isChasing = false;
-        chaseLostTimer = 0f;
-        if (m_Animator != null) m_Animator.SetBool("isAttacking", false);
-        // Forcer un nouveau point de patrouille
-        m_Timer = wanderTimer;
-        m_Agent.ResetPath();
-    }
-
     private Vector3 RandomNavMeshLocation(float radius)
     {
         Vector3 randomDirection = Random.insideUnitSphere * radius;
@@ -126,27 +98,27 @@ public class EnnemyControler : MonoBehaviour
     private bool HasLineOfSight()
     {
         if (m_Player == null) return false;
-        Vector3 eyePos = transform.position + Vector3.up * 1.0f;
-        Vector3 direction = (m_Player.position - eyePos);
-        float distance = direction.magnitude;
-        RaycastHit[] hits = Physics.RaycastAll(eyePos, direction.normalized, distance);
+
+        Vector3 from = transform.position + Vector3.up * 1.0f;
+        Vector3 to = m_Player.position + Vector3.up * 1.0f;
+        Vector3 direction = (to - from).normalized;
+        float distance = Vector3.Distance(from, to);
+
+        int mask = obstacleMask.value == 0 ? Physics.DefaultRaycastLayers : obstacleMask.value;
+        RaycastHit[] hits = Physics.RaycastAll(from, direction, distance, mask, QueryTriggerInteraction.Ignore);
         if (hits.Length == 0)
         {
-            return true; // pas d'obstacle entre les deux
+            return true;
         }
 
         System.Array.Sort(hits, (a, b) => a.distance.CompareTo(b.distance));
 
-        foreach (var h in hits)
+        foreach (RaycastHit hit in hits)
         {
-            if (h.collider == null) continue;
-            if (h.collider.isTrigger) continue; // ignorer triggers
-            if (h.collider.transform == m_Player || h.collider.CompareTag("Player"))
-            {
-                return true; // premier obstacle significatif est le joueur
-            }
-            // premier objet non-trigger rencontré n'est pas le joueur => vue bloquée
-            return false;
+            if (hit.collider == null) continue;
+            if (hit.collider.transform == transform) continue;
+
+            return hit.collider.transform == m_Player || hit.collider.CompareTag("Player");
         }
 
         return true;
