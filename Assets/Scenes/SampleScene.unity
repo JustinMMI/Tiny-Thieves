@@ -978,8 +978,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b379c052e0faea5458200699d86f9e69, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PlayerHealth
+  MAX_PV: 100
   PV: 100
   DeadScene: DeadScene
+  healDelay: 15
+  healCooldown: 1
+  healAmount: 1
+  immunityTime: 2
 --- !u!1 &120000010
 GameObject:
   m_ObjectHideFlags: 0
@@ -7928,7 +7933,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 98fc8cc20842b3c408d9acb4e94d1955, type: 3}
   m_Name: 
   m_EditorClassIdentifier: '::'
-  damage: 100
+  damage: 10
   detectionRange: 6
   obstacleMask:
     serializedVersion: 2
