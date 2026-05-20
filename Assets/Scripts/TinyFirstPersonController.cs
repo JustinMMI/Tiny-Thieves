@@ -100,6 +100,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     public float CurrentPitch => pitch;
     public Quaternion CurrentCameraWorldRotation => cameraPivot != null ? cameraPivot.rotation : transform.rotation;
     public Transform HeldItemTransform => heldItem != null ? heldItem.transform : null;
+    public bool IsClimbingWithHeldItem => isClimbing && heldItem != null;
 
     private void Awake()
     {

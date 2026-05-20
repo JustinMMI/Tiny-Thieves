@@ -342,6 +342,18 @@ public sealed class TinyRaymanBody : MonoBehaviour
         AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, snap);
     }
 
+    public void ApplyRemoteHandAnchors(
+        Vector3 leftAnchor,
+        Quaternion leftRotation,
+        Vector3 rightAnchor,
+        Quaternion rightRotation,
+        bool leftActive,
+        bool rightActive,
+        bool snap)
+    {
+        AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, leftActive, rightActive, snap);
+    }
+
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
     {
         AttachHands(
