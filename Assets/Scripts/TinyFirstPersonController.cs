@@ -96,6 +96,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private Coroutine itemGrabRoutine;
     private TinyRailWagon focusedWagon;
     private TinyRailWagon pushingWagon;
+    private bool isEndOfGameDead;
 
     public float CurrentPitch => pitch;
     public Quaternion CurrentCameraWorldRotation => cameraPivot != null ? cameraPivot.rotation : transform.rotation;
@@ -139,6 +140,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private void Update()
     {
         if (Keyboard.current == null)
+        {
+            return;
+        }
+
+        if (isEndOfGameDead)
         {
             return;
         }
@@ -237,12 +243,57 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
+        if (isEndOfGameDead)
+        {
+            return;
+        }
+
         RegisterClimbZone(other.GetComponentInParent<ClimbZone>());
     }
 
     private void OnTriggerExit(Collider other)
     {
         UnregisterClimbZone(other.GetComponentInParent<ClimbZone>());
+    }
+
+    public void TriggerEndOfGameDeath()
+    {
+        if (isEndOfGameDead)
+        {
+            return;
+        }
+
+        isEndOfGameDead = true;
+        horizontalVelocity = Vector3.zero;
+        verticalVelocity = 0f;
+        focusedItem = null;
+        focusedWagon = null;
+        pushingWagon = null;
+
+        if (itemGrabRoutine != null)
+        {
+            StopCoroutine(itemGrabRoutine);
+            itemGrabRoutine = null;
+        }
+
+        if (heldItem != null)
+        {
+            ReleaseHeldItem(false);
+        }
+
+        if (controller != null)
+        {
+            controller.enabled = false;
+        }
+
+        if (raymanBody != null)
+        {
+            raymanBody.TriggerLegoBreakAndDestroy(3f);
+        }
+        else
+        {
+            Destroy(gameObject, 3f);
+        }
     }
 
     private void OnRenderObject()

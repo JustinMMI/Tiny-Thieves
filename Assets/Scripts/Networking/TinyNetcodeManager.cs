@@ -68,6 +68,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private UnityTransport transport;
     private Component localPlayer;
     [SerializeField] private bool autoStartNetwork;
+    [SerializeField] private float testRoundDurationSeconds = 900f;
     private float playerSendTimer;
     private float entitySendTimer;
     private float clientRetryTimer;
@@ -87,6 +88,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private int pendingLocalSpawnSlot = -1;
     private float pendingGameStartRealtime = -1f;
     private string appliedSpawnSceneName;
+    private bool gameOverTriggered;
 
     private enum NetworkStartRole
     {
@@ -152,6 +154,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         ApplyLocalSkin();
         ProcessServerWagonPushes();
         UpdatePing();
+        UpdateRoundTimer();
         SendLobbyState();
         SendLocalState();
         UpdateRemotePlayers();
@@ -1597,6 +1600,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             FixedString128Bytes fixedSceneName = targetScene;
             pendingLocalSpawnSlot = GetLobbySlotForClient(networkManager.LocalClientId);
             pendingGameStartRealtime = Time.realtimeSinceStartup;
+            gameOverTriggered = false;
 
             foreach (ulong clientId in networkManager.ConnectedClientsIds)
             {
@@ -1620,6 +1624,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         ReadLobbyState(reader);
         reader.ReadValueSafe(out pendingLocalSpawnSlot);
         pendingGameStartRealtime = Time.realtimeSinceStartup;
+        gameOverTriggered = false;
         LoadGameplayScene(fixedSceneName.ToString());
     }
 
@@ -1768,12 +1773,72 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
+        DrawRoundTimer();
+
         string text = networkManager.IsServer
             ? "Ping: host"
             : "Ping: " + Mathf.RoundToInt(displayedPingMs) + " ms";
         GUIStyle style = GUI.skin.label;
         Vector2 size = style.CalcSize(new GUIContent(text));
         GUI.Label(new Rect(Screen.width - size.x - 16f, 12f, size.x + 4f, 24f), text);
+    }
+
+    private void UpdateRoundTimer()
+    {
+        if (gameOverTriggered || pendingGameStartRealtime < 0f || testRoundDurationSeconds <= 0f)
+        {
+            return;
+        }
+
+        if (GetRoundRemainingSeconds() > 0f)
+        {
+            return;
+        }
+
+        gameOverTriggered = true;
+        TriggerLocalGameOverDeath();
+    }
+
+    private float GetRoundRemainingSeconds()
+    {
+        if (pendingGameStartRealtime < 0f || testRoundDurationSeconds <= 0f)
+        {
+            return testRoundDurationSeconds;
+        }
+
+        return Mathf.Max(0f, testRoundDurationSeconds - (Time.realtimeSinceStartup - pendingGameStartRealtime));
+    }
+
+    private void DrawRoundTimer()
+    {
+        if (pendingGameStartRealtime < 0f || testRoundDurationSeconds <= 0f)
+        {
+            return;
+        }
+
+        int seconds = Mathf.CeilToInt(GetRoundRemainingSeconds());
+        int minutesPart = seconds / 60;
+        int secondsPart = seconds % 60;
+        string timerText = minutesPart.ToString("00") + ":" + secondsPart.ToString("00");
+
+        GUIStyle style = GUI.skin.label;
+        int previousFontSize = style.fontSize;
+        TextAnchor previousAlignment = style.alignment;
+        FontStyle previousFontStyle = style.fontStyle;
+
+        style.fontSize = 28;
+        style.alignment = TextAnchor.UpperCenter;
+        style.fontStyle = FontStyle.Bold;
+        GUI.Label(new Rect(0f, 14f, Screen.width, 42f), timerText, style);
+
+        style.fontSize = previousFontSize;
+        style.alignment = previousAlignment;
+        style.fontStyle = previousFontStyle;
+    }
+
+    private void TriggerLocalGameOverDeath()
+    {
+        localPlayer?.GetType().GetMethod("TriggerEndOfGameDeath")?.Invoke(localPlayer, null);
     }
 
     private void ProcessServerWagonPushes()
