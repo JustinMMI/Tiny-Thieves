@@ -107,6 +107,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private Coroutine itemGrabRoutine;
     private TinyRailWagon focusedWagon;
     private TinyRailWagon pushingWagon;
+    private TinyWagonSendLever focusedSendLever;
     private bool isEndOfGameDead;
     private float currentHealth;
     private float lastDamageTime = -999f;
@@ -223,6 +224,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         UpdateItemFocus();
         UpdateWagonFocus();
+        UpdateSendLeverFocus();
 
         if (Keyboard.current.eKey.wasPressedThisFrame && focusedItem != null)
         {
@@ -233,6 +235,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         if (Keyboard.current.eKey.wasPressedThisFrame && focusedWagon != null)
         {
             StartPushingWagon(focusedWagon);
+            return;
+        }
+
+        if (Keyboard.current.eKey.wasPressedThisFrame && focusedSendLever != null)
+        {
+            focusedSendLever.TryActivate();
+            focusedSendLever = null;
             return;
         }
 
@@ -378,7 +387,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void OnRenderObject()
     {
-        if ((!showClimbZonesInGame && focusedItem == null && focusedWagon == null) || !EnsureDebugLineMaterial())
+        if ((!showClimbZonesInGame && focusedItem == null && focusedWagon == null && focusedSendLever == null) || !EnsureDebugLineMaterial())
         {
             return;
         }
@@ -416,6 +425,11 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             DrawRuntimeWireBounds(focusedWagon.GetWorldBounds(), Color.cyan);
         }
 
+        if (focusedSendLever != null)
+        {
+            DrawRuntimeWireBounds(focusedSendLever.GetWorldBounds(), Color.yellow);
+        }
+
         GL.PopMatrix();
     }
 
@@ -423,7 +437,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     {
         DrawDamageOverlay();
 
-        if (focusedItem == null && focusedWagon == null)
+        if (focusedItem == null && focusedWagon == null && focusedSendLever == null)
         {
             return;
         }
@@ -440,10 +454,15 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             GUI.Label(new Rect(rect.x + 14f, rect.y + 58f, width - 28f, 20f), "Prix : " + focusedItem.Value + " $");
             GUI.Label(new Rect(rect.x + 14f, rect.y + 84f, width - 28f, 20f), "[E] Prendre");
         }
-        else
+        else if (focusedWagon != null)
         {
             GUI.Label(new Rect(rect.x + 14f, rect.y + 16f, width - 28f, 24f), "Wagon");
             GUI.Label(new Rect(rect.x + 14f, rect.y + 54f, width - 28f, 24f), "[E] Pousser");
+        }
+        else
+        {
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 16f, width - 28f, 24f), "Levier");
+            GUI.Label(new Rect(rect.x + 14f, rect.y + 54f, width - 28f, 24f), "[E] Appuyer pour envoyer");
         }
     }
 
@@ -995,6 +1014,27 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
     }
 
+    private void UpdateSendLeverFocus()
+    {
+        focusedSendLever = null;
+        if (cameraPivot == null || heldItem != null || focusedItem != null || focusedWagon != null || pushingWagon != null)
+        {
+            return;
+        }
+
+        Ray ray = new Ray(cameraPivot.position, cameraPivot.forward);
+        if (!Physics.Raycast(ray, out RaycastHit hit, wagonLookDistance, wagonInteractionMask, QueryTriggerInteraction.Collide))
+        {
+            return;
+        }
+
+        TinyWagonSendLever lever = hit.collider.GetComponentInParent<TinyWagonSendLever>();
+        if (lever != null && lever.CanInteract(transform))
+        {
+            focusedSendLever = lever;
+        }
+    }
+
     private void PickUpItem(TinyItem item)
     {
         if (item == null || cameraPivot == null || isGrabbingItem)
@@ -1198,6 +1238,16 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             raymanBody.ReleaseHands();
         }
+    }
+
+    public void ForceReleaseWagon(TinyRailWagon wagon)
+    {
+        if (pushingWagon == null || (wagon != null && pushingWagon != wagon))
+        {
+            return;
+        }
+
+        StopPushingWagon();
     }
 
     private void UpdateWagonPush()
