@@ -1,6 +1,11 @@
 fileFormatVersion: 2
-guid: 056893effc0d2c94ba06cca227b78823
+<<<<<<<< HEAD:Assets/Fonts/Rubik_Dirt/desktop.ini.meta
+guid: d2a6ae11a1409d946b07bbf52a2ec8f9
 DefaultImporter:
+========
+guid: 57616ed56e6238f4a9c85d972fd931a1
+PrefabImporter:
+>>>>>>>> Dev_Paul_v3:Assets/Models/BoîteBleu.prefab.meta
   externalObjects: {}
   userData: 
   assetBundleName: 

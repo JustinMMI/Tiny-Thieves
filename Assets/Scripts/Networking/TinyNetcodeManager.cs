@@ -68,6 +68,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private UnityTransport transport;
     private Component localPlayer;
     [SerializeField] private bool autoStartNetwork;
+    [SerializeField] private float testRoundDurationSeconds = 900f;
     private float playerSendTimer;
     private float entitySendTimer;
     private float clientRetryTimer;
@@ -84,6 +85,10 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private string currentRelayJoinCode;
     private int lastKnownLobbyPlayerCount;
     private int localSelectedSkin = -1;
+    private int pendingLocalSpawnSlot = -1;
+    private float pendingGameStartRealtime = -1f;
+    private string appliedSpawnSceneName;
+    private bool gameOverTriggered;
 
     private enum NetworkStartRole
     {
@@ -149,6 +154,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         ApplyLocalSkin();
         ProcessServerWagonPushes();
         UpdatePing();
+        UpdateRoundTimer();
         SendLobbyState();
         SendLocalState();
         UpdateRemotePlayers();
@@ -581,6 +587,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     {
         localPlayer = null;
         appliedLocalSkin = -1;
+        appliedSpawnSceneName = null;
         syncedEntities.Clear();
         remoteEntityTargets.Clear();
         lastSentEntityPoses.Clear();
@@ -598,6 +605,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         remotePlayers.Clear();
         RefreshSceneReferences();
+        ApplyPendingSpawnIfReady();
     }
 
 #if TINY_HAS_RELAY
@@ -819,6 +827,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             {
                 appliedLocalSkin = -1;
                 ApplyLocalSkin();
+                ApplyPendingSpawnIfReady();
             }
         }
 
@@ -1055,7 +1064,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         ApplyHeldEntityPayload(senderClientId, heldEntity);
-        if (heldEntity.HasEntity)
+        if (heldEntity.HasEntity && !heldEntity.UseLiveHandPose)
         {
             handPose = default;
         }
@@ -1074,6 +1083,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         remotePlayer.TargetJumpAirborne = jumpAirborne;
         remotePlayer.TargetHands = handPose;
         remotePlayer.TargetHeldEntityKey = heldEntity.HasEntity ? heldEntity.Key : null;
+        remotePlayer.TargetHeldEntityUseLiveHandPose = heldEntity.HasEntity && heldEntity.UseLiveHandPose;
         remotePlayer.ApplySkin(skinIndex);
     }
 
@@ -1587,15 +1597,19 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         {
             AssignMissingSkins();
             BroadcastLobbyState(NetworkDelivery.ReliableSequenced);
-            using FastBufferWriter writer = new FastBufferWriter(512, Allocator.Temp);
             FixedString128Bytes fixedSceneName = targetScene;
-            writer.WriteValueSafe(fixedSceneName);
-            WriteLobbyState(writer);
+            pendingLocalSpawnSlot = GetLobbySlotForClient(networkManager.LocalClientId);
+            pendingGameStartRealtime = Time.realtimeSinceStartup;
+            gameOverTriggered = false;
 
             foreach (ulong clientId in networkManager.ConnectedClientsIds)
             {
                 if (clientId != networkManager.LocalClientId)
                 {
+                    using FastBufferWriter writer = new FastBufferWriter(512, Allocator.Temp);
+                    writer.WriteValueSafe(fixedSceneName);
+                    WriteLobbyState(writer);
+                    writer.WriteValueSafe(GetLobbySlotForClient(clientId));
                     networkManager.CustomMessagingManager.SendNamedMessage(StartGameMessage, clientId, writer, NetworkDelivery.ReliableSequenced);
                 }
             }
@@ -1608,6 +1622,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     {
         reader.ReadValueSafe(out FixedString128Bytes fixedSceneName);
         ReadLobbyState(reader);
+        reader.ReadValueSafe(out pendingLocalSpawnSlot);
+        pendingGameStartRealtime = Time.realtimeSinceStartup;
+        gameOverTriggered = false;
         LoadGameplayScene(fixedSceneName.ToString());
     }
 
@@ -1616,10 +1633,137 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
         if (SceneManager.GetActiveScene().name == targetScene)
         {
+            instance?.RefreshSceneReferences();
+            instance?.ApplyPendingSpawnIfReady();
             return;
         }
 
         SceneManager.LoadScene(targetScene);
+    }
+
+    private void ApplyPendingSpawnIfReady()
+    {
+        if (localPlayer == null || networkManager == null)
+        {
+            return;
+        }
+
+        Scene activeScene = SceneManager.GetActiveScene();
+        if (appliedSpawnSceneName == activeScene.name)
+        {
+            return;
+        }
+
+        TinySpawnZone[] zones = GetSortedSpawnZones();
+        if (zones.Length == 0)
+        {
+            return;
+        }
+
+        TinySpawnZone spawnZone = zones[0];
+        for (int i = 1; i < zones.Length; i++)
+        {
+            zones[i].ClearSpawnBoxes();
+        }
+
+        int playerSlot = GetLocalLobbySlot();
+        int skinIndex = GetLocalSkinIndex();
+        if (!spawnZone.TryGetSpawnPointForSkin(skinIndex, playerSlot, out Vector3 position, out Quaternion rotation))
+        {
+            return;
+        }
+
+        TeleportLocalPlayer(position, rotation);
+        spawnZone.ConfigureSpawnBoxes(GetLobbySkinsBySlotArray(), pendingGameStartRealtime);
+        Debug.Log($"Tiny spawn applied: skin {skinIndex}, slot {playerSlot}, position {position}.");
+        appliedSpawnSceneName = activeScene.name;
+    }
+
+    private int GetLocalLobbySlot()
+    {
+        if (pendingLocalSpawnSlot >= 0)
+        {
+            return Mathf.Clamp(pendingLocalSpawnSlot, 0, SkinCount - 1);
+        }
+
+        if (networkManager == null)
+        {
+            return 0;
+        }
+
+        int slot = GetLobbySlotForClient(networkManager.LocalClientId);
+        if (slot >= 0)
+        {
+            return slot;
+        }
+
+        return Mathf.Clamp((int)networkManager.LocalClientId, 0, 3);
+    }
+
+    private int GetLobbySlotForClient(ulong clientId)
+    {
+        return lobbyClientOrder.IndexOf(clientId);
+    }
+
+    private int[] GetLobbySkinsBySlotArray()
+    {
+        int[] skinsBySlot = new int[SkinCount];
+        for (int i = 0; i < skinsBySlot.Length; i++)
+        {
+            skinsBySlot[i] = -1;
+        }
+
+        int count = Mathf.Min(lobbyClientOrder.Count, skinsBySlot.Length);
+        for (int i = 0; i < count; i++)
+        {
+            ulong clientId = lobbyClientOrder[i];
+            skinsBySlot[i] = lobbySkinAssignments.TryGetValue(clientId, out int skinIndex) ? skinIndex : -1;
+        }
+
+        return skinsBySlot;
+    }
+
+    private void TeleportLocalPlayer(Vector3 position, Quaternion rotation)
+    {
+        Transform playerTransform = localPlayer.transform;
+        CharacterController controller = playerTransform.GetComponent<CharacterController>();
+        bool controllerWasEnabled = controller != null && controller.enabled;
+        if (controller != null)
+        {
+            controller.enabled = false;
+        }
+
+        playerTransform.SetPositionAndRotation(position, rotation);
+
+        if (controller != null)
+        {
+            controller.enabled = controllerWasEnabled;
+        }
+    }
+
+    private static TinySpawnZone[] GetSortedSpawnZones()
+    {
+        TinySpawnZone[] zones = FindObjectsByType<TinySpawnZone>(FindObjectsSortMode.None);
+        Array.Sort(zones, (left, right) => string.CompareOrdinal(GetHierarchyPath(left.transform), GetHierarchyPath(right.transform)));
+        return zones;
+    }
+
+    private static string GetHierarchyPath(Transform transform)
+    {
+        if (transform == null)
+        {
+            return string.Empty;
+        }
+
+        string path = transform.name;
+        Transform current = transform.parent;
+        while (current != null)
+        {
+            path = current.name + "/" + path;
+            current = current.parent;
+        }
+
+        return path;
     }
 
     private void OnGUI()
@@ -1629,12 +1773,72 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
+        DrawRoundTimer();
+
         string text = networkManager.IsServer
             ? "Ping: host"
             : "Ping: " + Mathf.RoundToInt(displayedPingMs) + " ms";
         GUIStyle style = GUI.skin.label;
         Vector2 size = style.CalcSize(new GUIContent(text));
         GUI.Label(new Rect(Screen.width - size.x - 16f, 12f, size.x + 4f, 24f), text);
+    }
+
+    private void UpdateRoundTimer()
+    {
+        if (gameOverTriggered || pendingGameStartRealtime < 0f || testRoundDurationSeconds <= 0f)
+        {
+            return;
+        }
+
+        if (GetRoundRemainingSeconds() > 0f)
+        {
+            return;
+        }
+
+        gameOverTriggered = true;
+        TriggerLocalGameOverDeath();
+    }
+
+    private float GetRoundRemainingSeconds()
+    {
+        if (pendingGameStartRealtime < 0f || testRoundDurationSeconds <= 0f)
+        {
+            return testRoundDurationSeconds;
+        }
+
+        return Mathf.Max(0f, testRoundDurationSeconds - (Time.realtimeSinceStartup - pendingGameStartRealtime));
+    }
+
+    private void DrawRoundTimer()
+    {
+        if (pendingGameStartRealtime < 0f || testRoundDurationSeconds <= 0f)
+        {
+            return;
+        }
+
+        int seconds = Mathf.CeilToInt(GetRoundRemainingSeconds());
+        int minutesPart = seconds / 60;
+        int secondsPart = seconds % 60;
+        string timerText = minutesPart.ToString("00") + ":" + secondsPart.ToString("00");
+
+        GUIStyle style = GUI.skin.label;
+        int previousFontSize = style.fontSize;
+        TextAnchor previousAlignment = style.alignment;
+        FontStyle previousFontStyle = style.fontStyle;
+
+        style.fontSize = 28;
+        style.alignment = TextAnchor.UpperCenter;
+        style.fontStyle = FontStyle.Bold;
+        GUI.Label(new Rect(0f, 14f, Screen.width, 42f), timerText, style);
+
+        style.fontSize = previousFontSize;
+        style.alignment = previousAlignment;
+        style.fontStyle = previousFontStyle;
+    }
+
+    private void TriggerLocalGameOverDeath()
+    {
+        localPlayer?.GetType().GetMethod("TriggerEndOfGameDeath")?.Invoke(localPlayer, null);
     }
 
     private void ProcessServerWagonPushes()
@@ -2172,6 +2376,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public readonly Quaternion LeftRotation;
         public readonly Vector3 RightPosition;
         public readonly Quaternion RightRotation;
+        public readonly bool LeftActive;
+        public readonly bool RightActive;
 
         public HandPoseState(
             bool isValid,
@@ -2179,12 +2385,26 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             Quaternion leftRotation,
             Vector3 rightPosition,
             Quaternion rightRotation)
+            : this(isValid, leftPosition, leftRotation, rightPosition, rightRotation, true, true)
+        {
+        }
+
+        public HandPoseState(
+            bool isValid,
+            Vector3 leftPosition,
+            Quaternion leftRotation,
+            Vector3 rightPosition,
+            Quaternion rightRotation,
+            bool leftActive,
+            bool rightActive)
         {
             IsValid = isValid;
             LeftPosition = leftPosition;
             LeftRotation = leftRotation;
             RightPosition = rightPosition;
             RightRotation = rightRotation;
+            LeftActive = leftActive;
+            RightActive = rightActive;
         }
     }
 
@@ -2195,14 +2415,16 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public readonly Vector3 Position;
         public readonly Quaternion Rotation;
         public readonly Vector3 Velocity;
+        public readonly bool UseLiveHandPose;
 
-        public HeldEntityState(string key, Vector3 position, Quaternion rotation, Vector3 velocity)
+        public HeldEntityState(string key, Vector3 position, Quaternion rotation, Vector3 velocity, bool useLiveHandPose = false)
         {
             HasEntity = !string.IsNullOrEmpty(key);
             Key = key;
             Position = position;
             Rotation = rotation;
             Velocity = velocity;
+            UseLiveHandPose = useLiveHandPose;
         }
     }
 
@@ -2220,6 +2442,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public bool TargetJumpAirborne;
         public HandPoseState TargetHands;
         public string TargetHeldEntityKey;
+        public bool TargetHeldEntityUseLiveHandPose;
         private int appliedJumpSequence;
 
         public RemotePlayer(Transform transform)
@@ -2263,7 +2486,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 return;
             }
 
-            if (!string.IsNullOrEmpty(TargetHeldEntityKey)
+            if (!TargetHeldEntityUseLiveHandPose
+                && !string.IsNullOrEmpty(TargetHeldEntityKey)
                 && syncedEntities != null
                 && syncedEntities.TryGetValue(TargetHeldEntityKey, out Transform heldEntity)
                 && TryGetItemHandPose(heldEntity, Transform, out HandPoseState heldHandPose))
@@ -2430,7 +2654,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             key,
             heldEntity.position,
             heldEntity.rotation,
-            GetRigidbodyVelocity(heldEntity));
+            GetRigidbodyVelocity(heldEntity),
+            GetIsClimbingWithHeldItem(controller));
     }
 
     private string GetSyncedEntityKey(Transform entity)
@@ -2459,6 +2684,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         writer.WriteValueSafe(heldEntity.Position);
         writer.WriteValueSafe(heldEntity.Rotation);
         writer.WriteValueSafe(heldEntity.Velocity);
+        writer.WriteValueSafe(heldEntity.UseLiveHandPose);
     }
 
     private static HeldEntityState ReadHeldEntityState(FastBufferReader reader)
@@ -2473,7 +2699,14 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         reader.ReadValueSafe(out Vector3 position);
         reader.ReadValueSafe(out Quaternion rotation);
         reader.ReadValueSafe(out Vector3 velocity);
-        return new HeldEntityState(fixedKey.ToString(), position, rotation, velocity);
+        reader.ReadValueSafe(out bool useLiveHandPose);
+        return new HeldEntityState(fixedKey.ToString(), position, rotation, velocity, useLiveHandPose);
+    }
+
+    private static bool GetIsClimbingWithHeldItem(Component controller)
+    {
+        object value = controller?.GetType().GetProperty("IsClimbingWithHeldItem")?.GetValue(controller);
+        return value is bool isClimbingWithHeldItem && isClimbingWithHeldItem;
     }
 
     private static Vector3 GetRigidbodyVelocity(Transform transform)
@@ -2577,8 +2810,22 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             (Vector3)anchorArgs[1],
             (Quaternion)rotationArgs[1],
             (Vector3)anchorArgs[2],
-            (Quaternion)rotationArgs[2]);
+            (Quaternion)rotationArgs[2],
+            GetItemLeftHandActive(item),
+            GetItemRightHandActive(item));
         return true;
+    }
+
+    private static bool GetItemLeftHandActive(Component item)
+    {
+        object value = item?.GetType().GetProperty("LeftHandActive")?.GetValue(item);
+        return !(value is bool active) || active;
+    }
+
+    private static bool GetItemRightHandActive(Component item)
+    {
+        object value = item?.GetType().GetProperty("RightHandActive")?.GetValue(item);
+        return !(value is bool active) || active;
     }
 
     private static float GetWagonWheelRollAngle(Transform entity)
@@ -2692,6 +2939,35 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private static void InvokeApplyRemoteHandAnchors(Component body, HandPoseState handPose)
     {
+        var selectiveMethod = body?.GetType().GetMethod(
+            "ApplyRemoteHandAnchors",
+            new[]
+            {
+                typeof(Vector3),
+                typeof(Quaternion),
+                typeof(Vector3),
+                typeof(Quaternion),
+                typeof(bool),
+                typeof(bool),
+                typeof(bool)
+            });
+        if (selectiveMethod != null)
+        {
+            selectiveMethod.Invoke(
+                body,
+                new object[]
+                {
+                    handPose.LeftPosition,
+                    handPose.LeftRotation,
+                    handPose.RightPosition,
+                    handPose.RightRotation,
+                    handPose.LeftActive,
+                    handPose.RightActive,
+                    true
+                });
+            return;
+        }
+
         body?.GetType().GetMethod("ApplyRemoteHandAnchors")?.Invoke(
             body,
             new object[]

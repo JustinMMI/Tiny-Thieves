@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Globalization;
 using System.Text;
 using UnityEngine;
@@ -294,6 +295,37 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     public int JumpSequence => jumpSequence;
 
+    public void TriggerLegoBreakAndDestroy(float destroyDelay)
+    {
+        enabled = false;
+        if (characterAnimator != null)
+        {
+            characterAnimator.enabled = false;
+        }
+
+        Transform[] pieces =
+        {
+            characterModelRoot,
+            torso,
+            head,
+            leftHand,
+            rightHand,
+            leftFoot,
+            rightFoot
+        };
+
+        for (int i = 0; i < pieces.Length; i++)
+        {
+            DetachPhysicsPiece(pieces[i], i);
+            if (pieces[i] != null)
+            {
+                Destroy(pieces[i].gameObject, Mathf.Max(0f, destroyDelay));
+            }
+        }
+
+        StartCoroutine(DestroyOwnerAfterDelay(Mathf.Max(0f, destroyDelay)));
+    }
+
     public void SetSkin(int skinIndex)
     {
         selectedSkin = (PlayerSkin)Mathf.Clamp(skinIndex, 0, Enum.GetValues(typeof(PlayerSkin)).Length - 1);
@@ -340,6 +372,18 @@ public sealed class TinyRaymanBody : MonoBehaviour
         bool snap)
     {
         AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, snap);
+    }
+
+    public void ApplyRemoteHandAnchors(
+        Vector3 leftAnchor,
+        Quaternion leftRotation,
+        Vector3 rightAnchor,
+        Quaternion rightRotation,
+        bool leftActive,
+        bool rightActive,
+        bool snap)
+    {
+        AttachHands(leftAnchor, rightAnchor, leftRotation, rightRotation, leftActive, rightActive, snap);
     }
 
     public void AttachHands(Vector3 leftAnchor, Vector3 rightAnchor)
@@ -1375,6 +1419,75 @@ public sealed class TinyRaymanBody : MonoBehaviour
         Mesh mesh = cube.GetComponent<MeshFilter>().sharedMesh;
         DestroyGameObject(cube);
         return mesh;
+    }
+
+    private void DetachPhysicsPiece(Transform piece, int index)
+    {
+        if (piece == null)
+        {
+            return;
+        }
+
+        piece.SetParent(null, true);
+        Collider collider = piece.GetComponent<Collider>();
+        if (collider == null)
+        {
+            BoxCollider box = piece.gameObject.AddComponent<BoxCollider>();
+            box.size = GetPieceLocalBoundsSize(piece);
+            box.center = Vector3.zero;
+            collider = box;
+        }
+
+        collider.enabled = true;
+        Rigidbody body = piece.GetComponent<Rigidbody>();
+        if (body == null)
+        {
+            body = piece.gameObject.AddComponent<Rigidbody>();
+        }
+
+        body.isKinematic = false;
+        body.useGravity = true;
+        body.mass = 0.2f;
+
+        Vector3 outward = (piece.position - transform.position).normalized;
+        if (outward.sqrMagnitude < 0.001f)
+        {
+            outward = Quaternion.Euler(0f, index * 51f, 0f) * Vector3.forward;
+        }
+
+        body.linearVelocity = outward * 0.8f + Vector3.up * 0.45f;
+        body.angularVelocity = UnityEngine.Random.insideUnitSphere * 4f;
+    }
+
+    private static Vector3 GetPieceLocalBoundsSize(Transform piece)
+    {
+        Renderer[] renderers = piece.GetComponentsInChildren<Renderer>(true);
+        if (renderers.Length == 0)
+        {
+            return Vector3.one * 0.12f;
+        }
+
+        Bounds bounds = renderers[0].bounds;
+        for (int i = 1; i < renderers.Length; i++)
+        {
+            bounds.Encapsulate(renderers[i].bounds);
+        }
+
+        Vector3 lossyScale = piece.lossyScale;
+        return new Vector3(
+            lossyScale.x != 0f ? Mathf.Max(0.03f, bounds.size.x / Mathf.Abs(lossyScale.x)) : 0.12f,
+            lossyScale.y != 0f ? Mathf.Max(0.03f, bounds.size.y / Mathf.Abs(lossyScale.y)) : 0.12f,
+            lossyScale.z != 0f ? Mathf.Max(0.03f, bounds.size.z / Mathf.Abs(lossyScale.z)) : 0.12f);
+    }
+
+    private IEnumerator DestroyOwnerAfterDelay(float delay)
+    {
+        if (delay > 0f)
+        {
+            yield return new WaitForSeconds(delay);
+        }
+
+        DestroyGameObject(gameObject);
     }
 
     private static void DestroyComponent(Component component)

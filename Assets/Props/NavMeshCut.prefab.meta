@@ -1,5 +1,9 @@
 fileFormatVersion: 2
-guid: 6609b5cff6d5ebe48b5841e38abcda80
+<<<<<<<< HEAD:Assets/Props/NavMeshCut.prefab.meta
+guid: a27114af493494a49986ae7b0c43a5ea
+========
+guid: 993058be158f1484181e9ad6f3c86f73
+>>>>>>>> Dev_Paul_v3:Assets/Models/BoîteOrange.prefab.meta
 PrefabImporter:
   externalObjects: {}
   userData: 
