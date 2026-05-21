@@ -72,6 +72,17 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private LayerMask wagonInteractionMask = ~0;
     [SerializeField] private float wagonPlayerFollowSharpness = 12f;
 
+    [Header("Health")]
+    [SerializeField] private float maxHealth = 100f;
+    [SerializeField] private float regenDelay = 15f;
+    [SerializeField] private float regenPerSecond = 8f;
+    [SerializeField] private Texture2D[] damageScreenStages = new Texture2D[5];
+    [SerializeField] private Sprite[] damageScreenStageSprites = new Sprite[5];
+    [SerializeField] private Color deadScreenTint = new Color(0.28f, 0.28f, 0.28f, 0.38f);
+    [SerializeField] private Vector3 spectateCameraOffset = new Vector3(0f, 0.85f, -1.8f);
+    [SerializeField] private float spectateFollowSharpness = 8f;
+    [SerializeField] private bool debugLogHealth = true;
+
     [Header("Debug")]
     [SerializeField] private bool showClimbZonesInGame;
     [SerializeField] private Color climbZoneDebugColor = new Color(0.1f, 0.65f, 1f, 0.95f);
@@ -97,11 +108,18 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     private TinyRailWagon focusedWagon;
     private TinyRailWagon pushingWagon;
     private bool isEndOfGameDead;
+    private float currentHealth;
+    private float lastDamageTime = -999f;
+    private int lastLoggedHealthPercent = -1;
+    private float nextHealthDebugLogTime;
+    private Transform spectateTarget;
 
     public float CurrentPitch => pitch;
     public Quaternion CurrentCameraWorldRotation => cameraPivot != null ? cameraPivot.rotation : transform.rotation;
     public Transform HeldItemTransform => heldItem != null ? heldItem.transform : null;
     public bool IsClimbingWithHeldItem => isClimbing && heldItem != null;
+    public bool IsDead => isEndOfGameDead;
+    public float Health01 => maxHealth > 0f ? Mathf.Clamp01(currentHealth / maxHealth) : 0f;
 
     private void Awake()
     {
@@ -123,6 +141,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         ConfigureTinyBody(standingHeight);
         currentEyeHeight = standingEyeHeight;
+        currentHealth = maxHealth;
+        LogHealthDebug("spawn", true);
         ApplyCameraHeight(true);
     }
 
@@ -146,6 +166,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
         if (isEndOfGameDead)
         {
+            UpdateSpectateCamera();
             return;
         }
 
@@ -226,6 +247,7 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         Move();
         UpdateCrouch();
         UpdateCameraBob();
+        RegenerateHealth();
     }
 
     public void RegisterClimbZone(ClimbZone zone)
@@ -264,6 +286,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         isEndOfGameDead = true;
+        currentHealth = 0f;
+        LogHealthDebug("death", true);
         horizontalVelocity = Vector3.zero;
         verticalVelocity = 0f;
         focusedItem = null;
@@ -290,10 +314,66 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             raymanBody.TriggerLegoBreakAndDestroy(3f);
         }
-        else
+
+        spectateTarget = TinyNetcodeManager.GetRandomAliveSpectateTarget(transform);
+        if (cameraPivot != null && spectateTarget != null)
         {
-            Destroy(gameObject, 3f);
+            cameraPivot.SetParent(null, true);
         }
+    }
+
+    public void TakeDamage(float damage)
+    {
+        if (isEndOfGameDead || damage <= 0f)
+        {
+            return;
+        }
+
+        currentHealth = Mathf.Max(0f, currentHealth - damage);
+        lastDamageTime = Time.time;
+        LogHealthDebug("damage");
+        if (currentHealth <= 0f)
+        {
+            TriggerEndOfGameDeath();
+        }
+    }
+
+    private void RegenerateHealth()
+    {
+        if (isEndOfGameDead || currentHealth >= maxHealth || Time.time - lastDamageTime < regenDelay)
+        {
+            return;
+        }
+
+        float previousHealth = currentHealth;
+        currentHealth = Mathf.Min(maxHealth, currentHealth + regenPerSecond * Time.deltaTime);
+        if (!Mathf.Approximately(previousHealth, currentHealth))
+        {
+            LogHealthDebug("regen");
+        }
+    }
+
+    private void UpdateSpectateCamera()
+    {
+        if (cameraPivot == null)
+        {
+            return;
+        }
+
+        if (spectateTarget == null)
+        {
+            spectateTarget = TinyNetcodeManager.GetRandomAliveSpectateTarget(transform);
+            if (spectateTarget == null)
+            {
+                return;
+            }
+        }
+
+        Vector3 targetPosition = spectateTarget.TransformPoint(spectateCameraOffset);
+        Quaternion targetRotation = Quaternion.LookRotation((spectateTarget.position + Vector3.up * 0.35f - targetPosition).normalized, Vector3.up);
+        float follow = 1f - Mathf.Exp(-spectateFollowSharpness * Time.deltaTime);
+        cameraPivot.position = Vector3.Lerp(cameraPivot.position, targetPosition, follow);
+        cameraPivot.rotation = Quaternion.Slerp(cameraPivot.rotation, targetRotation, follow);
     }
 
     private void OnRenderObject()
@@ -341,6 +421,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void OnGUI()
     {
+        DrawDamageOverlay();
+
         if (focusedItem == null && focusedWagon == null)
         {
             return;
@@ -363,6 +445,80 @@ public sealed class TinyFirstPersonController : MonoBehaviour
             GUI.Label(new Rect(rect.x + 14f, rect.y + 16f, width - 28f, 24f), "Wagon");
             GUI.Label(new Rect(rect.x + 14f, rect.y + 54f, width - 28f, 24f), "[E] Pousser");
         }
+    }
+
+    private void DrawDamageOverlay()
+    {
+        if (!isEndOfGameDead)
+        {
+            Texture2D damageTexture = GetDamageOverlayTexture();
+            if (damageTexture != null)
+            {
+                GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), damageTexture, ScaleMode.StretchToFill, true);
+            }
+        }
+
+        if (isEndOfGameDead)
+        {
+            Color previousColor = GUI.color;
+            GUI.color = deadScreenTint;
+            GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), Texture2D.whiteTexture);
+            GUI.color = previousColor;
+        }
+    }
+
+    private Texture2D GetDamageOverlayTexture()
+    {
+        int stage = GetDamageOverlayStage();
+        if (stage < 0)
+        {
+            return null;
+        }
+
+        if (damageScreenStages != null && stage < damageScreenStages.Length && damageScreenStages[stage] != null)
+        {
+            return damageScreenStages[stage];
+        }
+
+        return damageScreenStageSprites != null && stage < damageScreenStageSprites.Length && damageScreenStageSprites[stage] != null
+            ? damageScreenStageSprites[stage].texture
+            : null;
+    }
+
+    private int GetDamageOverlayStage()
+    {
+        if (maxHealth <= 0f || currentHealth >= maxHealth)
+        {
+            return -1;
+        }
+
+        float healthPercent = Health01 * 100f;
+        return healthPercent > 80f ? 0
+            : healthPercent > 60f ? 1
+            : healthPercent > 40f ? 2
+            : healthPercent > 20f ? 3
+            : 4;
+    }
+
+    private void LogHealthDebug(string reason, bool force = false)
+    {
+        if (!debugLogHealth || maxHealth <= 0f)
+        {
+            return;
+        }
+
+        int healthPercent = Mathf.RoundToInt(Health01 * 100f);
+        if (!force && healthPercent == lastLoggedHealthPercent && Time.time < nextHealthDebugLogTime)
+        {
+            return;
+        }
+
+        lastLoggedHealthPercent = healthPercent;
+        nextHealthDebugLogTime = Time.time + 0.25f;
+        int stage = GetDamageOverlayStage();
+        string stageText = stage >= 0 ? "niveau " + (stage + 1) : "aucun";
+        Debug.Log("Tiny Health [" + name + "] " + currentHealth.ToString("0.0") + "/" + maxHealth.ToString("0.0")
+            + " (" + healthPercent + "%), ecran: " + stageText + ", raison: " + reason);
     }
 
     private void OnDrawGizmos()

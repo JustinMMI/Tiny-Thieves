@@ -213,6 +213,30 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     public static string CurrentRelayJoinCode => instance != null ? instance.currentRelayJoinCode : string.Empty;
 
+    public static Transform GetRandomAliveSpectateTarget(Transform excludedTransform)
+    {
+        if (instance == null)
+        {
+            return null;
+        }
+
+        List<Transform> candidates = new List<Transform>();
+        foreach (RemotePlayer remotePlayer in instance.remotePlayers.Values)
+        {
+            if (remotePlayer.Transform != null && remotePlayer.Transform != excludedTransform)
+            {
+                candidates.Add(remotePlayer.Transform);
+            }
+        }
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        return candidates[UnityEngine.Random.Range(0, candidates.Count)];
+    }
+
     public static int ConnectedPlayerCount
     {
         get
