@@ -37,6 +37,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const string PlayerStateMessage = "TinyPlayerState";
     private const string EntityStateMessage = "TinyEntityState";
     private const string WorldIntentMessage = "TinyWorldIntent";
+    private const string WorldEventMessage = "TinyWorldEvent";
     private const string PingMessage = "TinyPing";
     private const string StartGameMessage = "TinyStartGame";
     private const string LobbyStateMessage = "TinyLobbyState";
@@ -47,6 +48,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const byte IntentPushWagon = 3;
     private const byte IntentGrabWagon = 4;
     private const byte IntentReleaseWagon = 5;
+    private const byte IntentActivateLever = 6;
+    private const byte EventActivateLever = 1;
+    private const byte EventTeamMoney = 2;
 
 #if TINY_HAS_RELAY
     private static Task unityServicesInitializationTask;
@@ -89,6 +93,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private float pendingGameStartRealtime = -1f;
     private string appliedSpawnSceneName;
     private bool gameOverTriggered;
+    private int teamMoney;
+    private bool roundTimerForcedRed;
 
     private enum NetworkStartRole
     {
@@ -168,6 +174,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PlayerStateMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(EntityStateMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(WorldIntentMessage);
+            networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(WorldEventMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(PingMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(StartGameMessage);
             networkManager.CustomMessagingManager.UnregisterNamedMessageHandler(LobbyStateMessage);
@@ -358,6 +365,31 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     public static bool TrySendWagonRelease(Transform wagon, Vector3 playerPosition, Quaternion playerRotation)
     {
         return instance != null && instance.SendWagonAttachIntent(wagon, playerPosition, playerRotation, false);
+    }
+
+    public static bool TrySendWagonSendLeverActivation(Transform lever)
+    {
+        return instance != null && instance.SendLeverActivateIntent(lever);
+    }
+
+    public static void AddTeamMoneyAndStartFinalMinute(int amount)
+    {
+        if (instance == null)
+        {
+            return;
+        }
+
+        instance.AddTeamMoneyAndStartFinalMinuteInternal(amount);
+    }
+
+    public static void StartFinalMinute()
+    {
+        if (instance == null)
+        {
+            return;
+        }
+
+        instance.StartFinalMinuteInternal(true);
     }
 
     public static bool CanUseWagonSide(Transform wagon, Transform player)
@@ -798,6 +830,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PlayerStateMessage, OnPlayerStateMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(EntityStateMessage, OnEntityStateMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(WorldIntentMessage, OnWorldIntentMessage);
+        networkManager.CustomMessagingManager.RegisterNamedMessageHandler(WorldEventMessage, OnWorldEventMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(PingMessage, OnPingMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(StartGameMessage, OnStartGameMessage);
         networkManager.CustomMessagingManager.RegisterNamedMessageHandler(LobbyStateMessage, OnLobbyStateMessage);
@@ -1014,6 +1047,39 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         return true;
     }
 
+    private bool SendLeverActivateIntent(Transform lever)
+    {
+        if (lever == null)
+        {
+            return false;
+        }
+
+        if (networkManager != null && networkManager.IsServer)
+        {
+            string serverKey = GetSyncedEntityKey(lever);
+            if (string.IsNullOrEmpty(serverKey))
+            {
+                RebuildEntityCache();
+                serverKey = GetSyncedEntityKey(lever);
+                if (string.IsNullOrEmpty(serverKey))
+                {
+                    return false;
+                }
+            }
+
+            ActivateLeverFromServer(serverKey, lever);
+            return true;
+        }
+
+        if (!CanSendWorldIntent(lever, out string key))
+        {
+            return false;
+        }
+
+        SendWorldIntent(IntentActivateLever, key, lever.position, lever.rotation, Vector3.zero, 0f, Vector3.zero, Quaternion.identity, NetworkDelivery.ReliableSequenced);
+        return true;
+    }
+
     private bool CanSendWorldIntent(Transform entity, out string key)
     {
         key = null;
@@ -1027,6 +1093,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         key = GetSyncedEntityKey(entity);
+        if (string.IsNullOrEmpty(key))
+        {
+            RebuildEntityCache();
+            key = GetSyncedEntityKey(entity);
+        }
+
         return !string.IsNullOrEmpty(key);
     }
 
@@ -1286,6 +1358,79 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                         activeWagonPushes.Remove(senderClientId);
                     }
                 }
+                break;
+
+            case IntentActivateLever:
+                if (IsLever(entity))
+                {
+                    ActivateLeverFromServer(key, entity);
+                }
+                break;
+        }
+    }
+
+    private void ActivateLeverFromServer(string key, Transform lever)
+    {
+        if (string.IsNullOrEmpty(key) || lever == null || !IsLever(lever))
+        {
+            return;
+        }
+
+        activeWagonPushes.Clear();
+        InvokeActivateLever(lever, true);
+        BroadcastWorldEvent(EventActivateLever, key, teamMoney, GetRoundRemainingSeconds(), NetworkDelivery.ReliableSequenced);
+    }
+
+    private void BroadcastWorldEvent(byte eventType, string key, int moneyValue, float remainingSeconds, NetworkDelivery delivery)
+    {
+        if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening || networkManager.CustomMessagingManager == null)
+        {
+            return;
+        }
+
+        using FastBufferWriter writer = new FastBufferWriter(768, Allocator.Temp);
+        FixedString512Bytes fixedKey = key ?? string.Empty;
+        writer.WriteValueSafe(eventType);
+        writer.WriteValueSafe(fixedKey);
+        writer.WriteValueSafe(moneyValue);
+        writer.WriteValueSafe(remainingSeconds);
+
+        foreach (ulong clientId in networkManager.ConnectedClientsIds)
+        {
+            if (clientId != networkManager.LocalClientId)
+            {
+                networkManager.CustomMessagingManager.SendNamedMessage(WorldEventMessage, clientId, writer, delivery);
+            }
+        }
+    }
+
+    private void OnWorldEventMessage(ulong senderClientId, FastBufferReader reader)
+    {
+        reader.ReadValueSafe(out byte eventType);
+        reader.ReadValueSafe(out FixedString512Bytes fixedKey);
+        reader.ReadValueSafe(out int moneyValue);
+        reader.ReadValueSafe(out float remainingSeconds);
+
+        string key = fixedKey.ToString();
+        switch (eventType)
+        {
+            case EventActivateLever:
+                activeWagonPushes.Clear();
+                if (!syncedEntities.ContainsKey(key))
+                {
+                    RebuildEntityCache();
+                }
+
+                if (syncedEntities.TryGetValue(key, out Transform lever) && lever != null && IsLever(lever))
+                {
+                    InvokeActivateLever(lever, false);
+                }
+                break;
+
+            case EventTeamMoney:
+                teamMoney = Mathf.Max(0, moneyValue);
+                SetRoundRemainingSeconds(remainingSeconds);
+                roundTimerForcedRed = true;
                 break;
         }
     }
@@ -1625,6 +1770,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             pendingLocalSpawnSlot = GetLobbySlotForClient(networkManager.LocalClientId);
             pendingGameStartRealtime = Time.realtimeSinceStartup;
             gameOverTriggered = false;
+            teamMoney = 0;
+            roundTimerForcedRed = false;
 
             foreach (ulong clientId in networkManager.ConnectedClientsIds)
             {
@@ -1649,6 +1796,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         reader.ReadValueSafe(out pendingLocalSpawnSlot);
         pendingGameStartRealtime = Time.realtimeSinceStartup;
         gameOverTriggered = false;
+        teamMoney = 0;
+        roundTimerForcedRed = false;
         LoadGameplayScene(fixedSceneName.ToString());
     }
 
@@ -1797,6 +1946,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
+        DrawTeamMoney();
         DrawRoundTimer();
 
         string text = networkManager.IsServer
@@ -1805,6 +1955,23 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         GUIStyle style = GUI.skin.label;
         Vector2 size = style.CalcSize(new GUIContent(text));
         GUI.Label(new Rect(Screen.width - size.x - 16f, 12f, size.x + 4f, 24f), text);
+    }
+
+    private void DrawTeamMoney()
+    {
+        GUIStyle style = GUI.skin.label;
+        int previousFontSize = style.fontSize;
+        FontStyle previousFontStyle = style.fontStyle;
+        TextAnchor previousAlignment = style.alignment;
+
+        style.fontSize = 24;
+        style.fontStyle = FontStyle.Bold;
+        style.alignment = TextAnchor.UpperLeft;
+        GUI.Label(new Rect(16f, 12f, 320f, 36f), "Argent equipe : " + teamMoney + " $", style);
+
+        style.fontSize = previousFontSize;
+        style.fontStyle = previousFontStyle;
+        style.alignment = previousAlignment;
     }
 
     private void UpdateRoundTimer()
@@ -1849,15 +2016,59 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         int previousFontSize = style.fontSize;
         TextAnchor previousAlignment = style.alignment;
         FontStyle previousFontStyle = style.fontStyle;
+        Color previousColor = GUI.color;
 
         style.fontSize = 28;
         style.alignment = TextAnchor.UpperCenter;
         style.fontStyle = FontStyle.Bold;
+        if (roundTimerForcedRed)
+        {
+            GUI.color = Color.red;
+        }
+
         GUI.Label(new Rect(0f, 14f, Screen.width, 42f), timerText, style);
 
+        GUI.color = previousColor;
         style.fontSize = previousFontSize;
         style.alignment = previousAlignment;
         style.fontStyle = previousFontStyle;
+    }
+
+    private void AddTeamMoneyAndStartFinalMinuteInternal(int amount)
+    {
+        if (networkManager != null && networkManager.IsListening && !networkManager.IsServer)
+        {
+            return;
+        }
+
+        teamMoney = Mathf.Max(0, teamMoney + Mathf.Max(0, amount));
+        StartFinalMinuteInternal(false);
+        BroadcastWorldEvent(EventTeamMoney, string.Empty, teamMoney, GetRoundRemainingSeconds(), NetworkDelivery.ReliableSequenced);
+    }
+
+    private void StartFinalMinuteInternal(bool broadcast)
+    {
+        SetRoundRemainingSeconds(60f);
+        roundTimerForcedRed = true;
+        gameOverTriggered = false;
+
+        if (broadcast)
+        {
+            BroadcastWorldEvent(EventTeamMoney, string.Empty, teamMoney, GetRoundRemainingSeconds(), NetworkDelivery.ReliableSequenced);
+        }
+    }
+
+    private void SetRoundRemainingSeconds(float seconds)
+    {
+        float remaining = Mathf.Max(0f, seconds);
+        if (testRoundDurationSeconds <= 0f)
+        {
+            testRoundDurationSeconds = remaining;
+        }
+
+        float elapsed = pendingGameStartRealtime >= 0f ? Time.realtimeSinceStartup - pendingGameStartRealtime : 0f;
+        pendingGameStartRealtime = Time.realtimeSinceStartup - Mathf.Max(0f, elapsed);
+        testRoundDurationSeconds = Mathf.Max(elapsed + remaining, 0.01f);
     }
 
     private void TriggerLocalGameOverDeath()
@@ -2182,6 +2393,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         for (int i = 0; i < wagons.Length; i++)
         {
             AddSyncedEntity(wagons[i].transform);
+        }
+
+        Component[] levers = FindComponentsByTypeName("TinyWagonSendLever");
+        for (int i = 0; i < levers.Length; i++)
+        {
+            AddSyncedEntity(levers[i].transform);
         }
     }
 
@@ -2790,6 +3007,17 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private static bool IsWagon(Transform entity)
     {
         return entity != null && entity.GetComponent("TinyRailWagon") != null;
+    }
+
+    private static bool IsLever(Transform entity)
+    {
+        return entity != null && entity.GetComponent("TinyWagonSendLever") != null;
+    }
+
+    private static void InvokeActivateLever(Transform entity, bool serverAuthoritative)
+    {
+        Component lever = entity != null ? entity.GetComponent("TinyWagonSendLever") : null;
+        lever?.GetType().GetMethod("ActivateFromNetwork")?.Invoke(lever, new object[] { serverAuthoritative });
     }
 
     private static void InvokeApplyRemoteHeldState(Transform entity, bool isHeld)
