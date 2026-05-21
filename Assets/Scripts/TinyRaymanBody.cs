@@ -295,7 +295,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
 
     public int JumpSequence => jumpSequence;
 
-    public void TriggerLegoBreakAndDestroy(float destroyDelay)
+    public void TriggerLegoBreakAndDestroy(float destroyDelay, bool destroyOwnerAfterDelay = false)
     {
         enabled = false;
         if (characterAnimator != null)
@@ -323,7 +323,10 @@ public sealed class TinyRaymanBody : MonoBehaviour
             }
         }
 
-        StartCoroutine(DestroyOwnerAfterDelay(Mathf.Max(0f, destroyDelay)));
+        if (destroyOwnerAfterDelay)
+        {
+            StartCoroutine(DestroyOwnerAfterDelay(Mathf.Max(0f, destroyDelay)));
+        }
     }
 
     public void SetSkin(int skinIndex)

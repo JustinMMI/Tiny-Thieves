@@ -50,7 +50,7 @@ public class PlayerHealth : MonoBehaviour
         // Only process healing if not at max health
         if (PV >= MAX_PV)
         {
-            healDelay = 15; // Reset heal delay when taking damage
+            healDelay = 15f; // Reset heal delay when taking damage
             healDelayTimer = 0f;
             healTimer = 0f;
         }
