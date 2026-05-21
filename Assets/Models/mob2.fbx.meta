@@ -3,7 +3,82 @@ guid: 13c5332c0b617a349af3243c17c07594
 ModelImporter:
   serializedVersion: 24200
   internalIDToNameTable: []
-  externalObjects: {}
+  externalObjects:
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: Beholder
+    second: {fileID: 2100000, guid: 339b605230fd4ec44b3b2b73e6de2bdc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: eye
+    second: {fileID: 2100000, guid: 3458c3498360fe842b17b16332e380d5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: tooth
+    second: {fileID: 2100000, guid: 66e9f307855e0934fac9d6283b6b292c, type: 2}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: BSurfaceMeshBase Color - 2048px
+    second: {fileID: 2800000, guid: 2dc20c6b0f2e5d549a2279e261b89da2, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: BSurfaceMeshBase Normal - 2048px
+    second: {fileID: 2800000, guid: b7ccaf3959403404fb6d15407e4c6edf, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: BSurfaceMeshMetallic - 2048px
+    second: {fileID: 2800000, guid: 9ff7f62d124201143b7a5660c6b01852, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: BSurfaceMeshRoughness - 2048px
+    second: {fileID: 2800000, guid: 919042964bc9fdd46be69ca028a63f8b, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: DefaultMaterial_BaseColor
+    second: {fileID: 2800000, guid: d7133383840ea8c4280341a2f412c673, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: DefaultMaterial_Metalness
+    second: {fileID: 2800000, guid: 7d0d375baf69a6243acb43dcae32094a, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: DefaultMaterial_Normal
+    second: {fileID: 2800000, guid: 9a402c02d51926f4a87df4f7101b4fd2, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: DefaultMaterial_Roughness
+    second: {fileID: 2800000, guid: 4ac77773c4f312d42ae1d0232034c1f6, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: yachi.Base Color - 2048px
+    second: {fileID: 2800000, guid: d5d583e6820fc114692c8563f9b54b33, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: yachi.Metallic - 2048px
+    second: {fileID: 2800000, guid: 81b0b569de60f09499a3bf985c3e2cb3, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: yachi.Normal - 2048px
+    second: {fileID: 2800000, guid: c6f4ccc871de49249acee3cdc99e547f, type: 3}
+  - first:
+      type: UnityEngine:Texture2D
+      assembly: UnityEngine.CoreModule
+      name: yachi.Roughness - 2048px
+    second: {fileID: 2800000, guid: 9fecea7ac6deeb84ab53e9085d79f6a3, type: 3}
   materials:
     materialImportMode: 2
     materialName: 0
