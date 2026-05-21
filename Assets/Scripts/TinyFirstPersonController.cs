@@ -449,10 +449,13 @@ public sealed class TinyFirstPersonController : MonoBehaviour
 
     private void DrawDamageOverlay()
     {
-        Texture2D damageTexture = GetDamageOverlayTexture();
-        if (damageTexture != null)
+        if (!isEndOfGameDead)
         {
-            GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), damageTexture, ScaleMode.StretchToFill, true);
+            Texture2D damageTexture = GetDamageOverlayTexture();
+            if (damageTexture != null)
+            {
+                GUI.DrawTexture(new Rect(0f, 0f, Screen.width, Screen.height), damageTexture, ScaleMode.StretchToFill, true);
+            }
         }
 
         if (isEndOfGameDead)

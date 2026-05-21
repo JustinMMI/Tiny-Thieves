@@ -13643,6 +13643,93 @@ Transform:
   m_CorrespondingSourceObject: {fileID: 400000001, guid: b8ee052e6b2dfcb4cad43e5c5c6a155b, type: 3}
   m_PrefabInstance: {fileID: 2130514052}
   m_PrefabAsset: {fileID: 0}
+--- !u!1001 &1239389956522856666
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalPosition.x
+      value: 3.98
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalPosition.y
+      value: 0.666
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalPosition.z
+      value: 4.743
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalRotation.w
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalRotation.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalRotation.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalRotation.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 3961498185578655522, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4445546723312760216, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      propertyPath: m_Name
+      value: levierv2
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents:
+    - targetCorrespondingSourceObject: {fileID: 4445546723312760216, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+      insertIndex: -1
+      addedObject: {fileID: 1239389956522856668}
+  m_SourcePrefab: {fileID: 100100000, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+--- !u!1 &1239389956522856667 stripped
+GameObject:
+  m_CorrespondingSourceObject: {fileID: 4445546723312760216, guid: 769fdce51ee9d5447844f648c9b6a5e7, type: 3}
+  m_PrefabInstance: {fileID: 1239389956522856666}
+  m_PrefabAsset: {fileID: 0}
+--- !u!95 &1239389956522856668
+Animator:
+  serializedVersion: 7
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1239389956522856667}
+  m_Enabled: 1
+  m_Avatar: {fileID: 0}
+  m_Controller: {fileID: 9100000, guid: ec35d7bc4b42b69448a90e66caabae9a, type: 2}
+  m_CullingMode: 0
+  m_UpdateMode: 0
+  m_ApplyRootMotion: 0
+  m_LinearVelocityBlending: 0
+  m_StabilizeFeet: 0
+  m_AnimatePhysics: 0
+  m_WarningMessage: 
+  m_HasTransformHierarchy: 1
+  m_AllowConstantClipSamplingOptimization: 1
+  m_KeepAnimatorStateOnDisable: 0
+  m_WriteDefaultValuesOnDisable: 0
 --- !u!4 &1690628965827799985 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 1921977636349886339, guid: 84cd18441b4cbd34bb27b615937f1cfc, type: 3}
@@ -14060,3 +14147,4 @@ SceneRoots:
   - {fileID: 2033602226}
   - {fileID: 126593526}
   - {fileID: 1106275279}
+  - {fileID: 1239389956522856666}
