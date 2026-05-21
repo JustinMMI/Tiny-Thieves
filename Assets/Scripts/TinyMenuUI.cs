@@ -34,6 +34,27 @@ public sealed class TinyMenuUI : MonoBehaviour
     [SerializeField] private Button startGameButton;
     [SerializeField] private Button lobbySettingsButton;
 
+    [Header("Credits")]
+    [SerializeField] private Button creditsBackButton;
+
+    [Header("Settings")]
+    [SerializeField] private Button settingsBackButton;
+    [SerializeField] private Button settingsApplyButton;
+    [SerializeField] private Button settingsMainMenuButton;
+
+    [Header("Settings – Sliders")]
+    [SerializeField] private Slider settingsSliderMasterVolume;
+    [SerializeField] private Slider settingsSliderMusicVolume;
+    [SerializeField] private Slider settingsSliderBrightness;
+    [SerializeField] private Slider settingsSliderSensitivity;
+
+    [Header("Settings – Lists")]
+    [SerializeField] private ScrollRect settingsScrollResolution;
+    [SerializeField] private ScrollRect settingsScrollDisplayMode;
+
+    [Header("Settings – Toggles")]
+    [SerializeField] private Button settingsButtonVSync;
+
     [Header("Skin Settings")]
     [SerializeField] private string[] skinNames = { "Vert", "Rouge", "Bleu", "Orange" };
     [SerializeField] private TMP_Text selectedSkinNameText;
@@ -82,6 +103,7 @@ public sealed class TinyMenuUI : MonoBehaviour
         ResolveOptionalPanels();
         BindButtons();
         EnsureNavigationManager();
+        InitSettingsManager();
         ShowMainMenu();
     }
 
@@ -91,6 +113,24 @@ public sealed class TinyMenuUI : MonoBehaviour
         {
             gameObject.AddComponent<UINavigationManager>();
         }
+    }
+
+    private void InitSettingsManager()
+    {
+        TinySettingsManager mgr = GetComponent<TinySettingsManager>();
+        if (mgr == null)
+        {
+            mgr = gameObject.AddComponent<TinySettingsManager>();
+        }
+
+        mgr.Init(
+            settingsSliderMasterVolume,
+            settingsSliderMusicVolume,
+            settingsSliderBrightness,
+            settingsSliderSensitivity,
+            settingsScrollResolution,
+            settingsScrollDisplayMode,
+            settingsButtonVSync);
     }
 
     private void Update()
@@ -337,18 +377,41 @@ public sealed class TinyMenuUI : MonoBehaviour
 
     private void BindButtons()
     {
+        // Main Menu
         AddListener(playButton, HostGame);
         AddListener(joinButton, JoinGame);
         AddListener(settingsButton, ShowSettings);
         AddListener(creditsButton, ShowCredits);
+
+        // Lobby
         AddListener(copyCodeButton, CopyLobbyCode);
         AddListener(leaveLobbyButton, LeaveLobby);
         AddListener(startGameButton, StartGame);
         AddListener(lobbySettingsButton, ShowPartySettings);
+
+        // Credits
+        AddListener(creditsBackButton, ShowMainMenu);
+
+        // Settings
+        AddListener(settingsBackButton, HideSettings);
+        AddListener(settingsMainMenuButton, ShowMainMenu);
+        // settingsApplyButton has no logic yet; listener kept for future implementation.
+        AddListener(settingsApplyButton, OnSettingsApply);
+
+        // Skin / Party Settings
         AddListener(previousSkinButton, PreviousSkin);
         AddListener(nextSkinButton, NextSkin);
         AddListener(equipSkinButton, EquipSkin);
         AddListener(closeSettingsButton, HideSettings);
+    }
+
+    /// <summary>
+    /// Called when the Apply button in the Settings panel is pressed.
+    /// Commits all pending settings changes via TinySettingsManager.
+    /// </summary>
+    public void OnSettingsApply()
+    {
+        TinySettingsManager.Instance?.ApplyAll();
     }
 
     private void ResolveOptionalPanels()
@@ -363,7 +426,150 @@ public sealed class TinyMenuUI : MonoBehaviour
             partySettingsPanel = FindChildGameObject(partySettingsPanelFallbackName);
         }
 
+        // Lobby buttons — resolve by GameObject name if not assigned in the Inspector.
+        if (leaveLobbyButton == null && lobbyPanel != null)
+        {
+            leaveLobbyButton = FindButtonInPanel(lobbyPanel, "Quitter");
+        }
+
+        if (lobbySettingsButton == null && lobbyPanel != null)
+        {
+            lobbySettingsButton = FindButtonInPanel(lobbyPanel, "Paramètres");
+        }
+
+        // Credits back button — resolve by sprite name pattern if not assigned.
+        if (creditsBackButton == null && creditsPanel != null)
+        {
+            creditsBackButton = FindButtonInPanel(creditsPanel, "Jouer (4)");
+        }
+
+        // Settings buttons — resolve by GameObject name if not assigned.
+        if (settingsPanel != null)
+        {
+            if (settingsBackButton == null)
+            {
+                settingsBackButton = FindButtonInPanel(settingsPanel, "Jouer (1)");
+            }
+
+            if (settingsApplyButton == null)
+            {
+                settingsApplyButton = FindButtonInPanel(settingsPanel, "Jouer (2)");
+            }
+
+            if (settingsMainMenuButton == null)
+            {
+                settingsMainMenuButton = FindButtonInPanel(settingsPanel, "Jouer");
+            }
+
+            // Settings sliders — resolve by sibling index if not assigned in the Inspector.
+            if (settingsSliderMasterVolume == null)
+            {
+                settingsSliderMasterVolume = FindSliderInPanel(settingsPanel, "Slider");
+            }
+
+            if (settingsSliderMusicVolume == null)
+            {
+                settingsSliderMusicVolume = FindSliderInPanel(settingsPanel, "Slider (1)");
+            }
+
+            if (settingsSliderBrightness == null)
+            {
+                settingsSliderBrightness = FindSliderInPanel(settingsPanel, "Slider (2)");
+            }
+
+            if (settingsSliderSensitivity == null)
+            {
+                settingsSliderSensitivity = FindSliderInPanel(settingsPanel, "Slider (3)");
+            }
+
+            // Settings scroll lists — resolve by name.
+            if (settingsScrollResolution == null)
+            {
+                settingsScrollResolution = FindScrollRectInPanel(settingsPanel, "Scroll View (1)");
+            }
+
+            if (settingsScrollDisplayMode == null)
+            {
+                settingsScrollDisplayMode = FindScrollRectInPanel(settingsPanel, "Scroll View (2)");
+            }
+
+            // VSync button — "Jouer (3)" is the first red toggle-style button in the panel.
+            if (settingsButtonVSync == null)
+            {
+                settingsButtonVSync = FindButtonInPanel(settingsPanel, "Jouer (3)");
+            }
+        }
+
         ConfigureSkinPreviewCamera();
+    }
+
+    private static Button FindButtonInPanel(GameObject panel, string childName)
+    {
+        if (panel == null || string.IsNullOrWhiteSpace(childName))
+        {
+            return null;
+        }
+
+        Transform[] children = panel.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < children.Length; i++)
+        {
+            if (children[i] != null && children[i].name == childName)
+            {
+                Button btn = children[i].GetComponent<Button>();
+                if (btn != null)
+                {
+                    return btn;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static Slider FindSliderInPanel(GameObject panel, string childName)
+    {
+        if (panel == null || string.IsNullOrWhiteSpace(childName))
+        {
+            return null;
+        }
+
+        Transform[] children = panel.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < children.Length; i++)
+        {
+            if (children[i] != null && children[i].name == childName)
+            {
+                Slider s = children[i].GetComponent<Slider>();
+                if (s != null)
+                {
+                    return s;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static ScrollRect FindScrollRectInPanel(GameObject panel, string childName)
+    {
+        if (panel == null || string.IsNullOrWhiteSpace(childName))
+        {
+            return null;
+        }
+
+        Transform[] children = panel.GetComponentsInChildren<Transform>(true);
+        for (int i = 0; i < children.Length; i++)
+        {
+            if (children[i] != null && children[i].name == childName)
+            {
+                ScrollRect sr = children[i].GetComponent<ScrollRect>();
+                if (sr != null)
+                {
+                    return sr;
+                }
+            }
+        }
+
+        return null;
     }
 
     private void RefreshLobby()

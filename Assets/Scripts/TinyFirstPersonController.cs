@@ -15,6 +15,14 @@ public sealed class TinyFirstPersonController : MonoBehaviour
     [SerializeField] private float minPitch = -85f;
     [SerializeField] private float maxPitch = 85f;
 
+    /// <summary>
+    /// Returns the effective mouse sensitivity: from TinySettingsManager if available,
+    /// otherwise falls back to the serialized Inspector value.
+    /// </summary>
+    private float EffectiveSensitivity => TinySettingsManager.Instance != null
+        ? TinySettingsManager.GetMouseSensitivity()
+        : mouseSensitivity;
+
     [Header("Movement")]
     [SerializeField] private float walkSpeed = 1.65f;
     [SerializeField] private float sprintSpeed = 2.55f;
@@ -552,9 +560,9 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         }
 
         Vector2 mouseDelta = Mouse.current.delta.ReadValue();
-        transform.Rotate(Vector3.up * (mouseDelta.x * mouseSensitivity * sensitivityMultiplier));
+        transform.Rotate(Vector3.up * (mouseDelta.x * EffectiveSensitivity * sensitivityMultiplier));
 
-        pitch = Mathf.Clamp(pitch - mouseDelta.y * mouseSensitivity * sensitivityMultiplier, minPitch, maxPitch);
+        pitch = Mathf.Clamp(pitch - mouseDelta.y * EffectiveSensitivity * sensitivityMultiplier, minPitch, maxPitch);
         cameraPivot.localRotation = Quaternion.Euler(pitch, 0f, 0f);
         if (raymanBody != null)
         {
