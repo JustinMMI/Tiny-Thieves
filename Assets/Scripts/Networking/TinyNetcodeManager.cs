@@ -94,6 +94,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private int lastKnownLobbyPlayerCount;
     private int localSelectedSkin = -1;
     private int pendingLocalSpawnSlot = -1;
+    private int gameplaySeed;
     private float pendingGameStartRealtime = -1f;
     private string appliedSpawnSceneName;
     private bool gameOverTriggered;
@@ -234,6 +235,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         && (instance.networkManager.IsServer || instance.networkManager.IsConnectedClient);
 
     public static string CurrentRelayJoinCode => instance != null ? instance.currentRelayJoinCode : string.Empty;
+    public static int CurrentGameplaySeed => instance != null ? instance.gameplaySeed : 0;
 
     public static Transform GetRandomAliveSpectateTarget(Transform excludedTransform)
     {
@@ -355,6 +357,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         instance.SendStartGame(sceneName);
+    }
+
+    public static void RebuildSyncedEntitiesNow()
+    {
+        instance?.RebuildEntityCache();
     }
 
     public static void RequestMainMenuFromEndScreen()
@@ -1846,6 +1853,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void SendStartGame(string sceneName)
     {
         string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
+        gameplaySeed = UnityEngine.Random.Range(1, int.MaxValue);
         if (networkManager != null
             && networkManager.IsListening
             && networkManager.IsServer
@@ -1868,6 +1876,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 {
                     using FastBufferWriter writer = new FastBufferWriter(512, Allocator.Temp);
                     writer.WriteValueSafe(fixedSceneName);
+                    writer.WriteValueSafe(gameplaySeed);
                     WriteLobbyState(writer);
                     writer.WriteValueSafe(GetLobbySlotForClient(clientId));
                     networkManager.CustomMessagingManager.SendNamedMessage(StartGameMessage, clientId, writer, NetworkDelivery.ReliableSequenced);
@@ -1881,6 +1890,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void OnStartGameMessage(ulong senderClientId, FastBufferReader reader)
     {
         reader.ReadValueSafe(out FixedString128Bytes fixedSceneName);
+        reader.ReadValueSafe(out gameplaySeed);
         ReadLobbyState(reader);
         reader.ReadValueSafe(out pendingLocalSpawnSlot);
         pendingGameStartRealtime = Time.realtimeSinceStartup;
@@ -2065,7 +2075,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         style.fontSize = 24;
         style.fontStyle = FontStyle.Bold;
         style.alignment = TextAnchor.UpperLeft;
-        GUI.Label(new Rect(16f, 12f, 320f, 36f), "Argent equipe : " + teamMoney + " $", style);
+        GUI.Label(new Rect(28f, 21f, 220f, 36f), teamMoney + " $", style);
 
         style.fontSize = previousFontSize;
         style.fontStyle = previousFontStyle;
