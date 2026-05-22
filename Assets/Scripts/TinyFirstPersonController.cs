@@ -305,6 +305,8 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         isEndOfGameDead = true;
         currentHealth = 0f;
         LogHealthDebug("death", true);
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
         horizontalVelocity = Vector3.zero;
         verticalVelocity = 0f;
         focusedItem = null;
@@ -337,6 +339,33 @@ public sealed class TinyFirstPersonController : MonoBehaviour
         {
             cameraPivot.SetParent(null, true);
         }
+    }
+
+    public void FreezeForEndScreen()
+    {
+        horizontalVelocity = Vector3.zero;
+        verticalVelocity = 0f;
+        focusedItem = null;
+        focusedWagon = null;
+        focusedSendLever = null;
+
+        if (pushingWagon != null)
+        {
+            StopPushingWagon();
+        }
+
+        if (itemGrabRoutine != null)
+        {
+            StopCoroutine(itemGrabRoutine);
+            itemGrabRoutine = null;
+        }
+
+        if (controller != null)
+        {
+            controller.enabled = false;
+        }
+
+        enabled = false;
     }
 
     public void TakeDamage(float damage)

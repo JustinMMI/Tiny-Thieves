@@ -7,6 +7,7 @@ using Unity.Netcode;
 using Unity.Netcode.Transports.UTP;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 #if TINY_HAS_RELAY
 using Unity.Services.Authentication;
@@ -49,8 +50,11 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private const byte IntentGrabWagon = 4;
     private const byte IntentReleaseWagon = 5;
     private const byte IntentActivateLever = 6;
+    private const byte IntentReplayToLobby = 7;
     private const byte EventActivateLever = 1;
     private const byte EventTeamMoney = 2;
+    private const byte EventRoundEnd = 3;
+    private const byte EventReplayToLobby = 4;
 
 #if TINY_HAS_RELAY
     private static Task unityServicesInitializationTask;
@@ -90,11 +94,21 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private int lastKnownLobbyPlayerCount;
     private int localSelectedSkin = -1;
     private int pendingLocalSpawnSlot = -1;
+    private int gameplaySeed;
     private float pendingGameStartRealtime = -1f;
     private string appliedSpawnSceneName;
     private bool gameOverTriggered;
     private int teamMoney;
     private bool roundTimerForcedRed;
+    private bool endScreenShown;
+    private bool roundEndWasWin;
+    private GameObject hudRoot;
+    private GameObject loseScreenRoot;
+    private GameObject winScreenRoot;
+    private GameObject deathHudRoot;
+    private bool hudReferencesResolved;
+    private bool endUiButtonsBound;
+    private GameObject deathContextRoot;
 
     private enum NetworkStartRole
     {
@@ -160,7 +174,9 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         ApplyLocalSkin();
         ProcessServerWagonPushes();
         UpdatePing();
+        UpdateAllPlayersDeadFailState();
         UpdateRoundTimer();
+        UpdateGameplayHudVisibility();
         SendLobbyState();
         SendLocalState();
         UpdateRemotePlayers();
@@ -219,6 +235,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         && (instance.networkManager.IsServer || instance.networkManager.IsConnectedClient);
 
     public static string CurrentRelayJoinCode => instance != null ? instance.currentRelayJoinCode : string.Empty;
+    public static int CurrentGameplaySeed => instance != null ? instance.gameplaySeed : 0;
 
     public static Transform GetRandomAliveSpectateTarget(Transform excludedTransform)
     {
@@ -340,6 +357,54 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         }
 
         instance.SendStartGame(sceneName);
+    }
+
+    public static void RebuildSyncedEntitiesNow()
+    {
+        instance?.RebuildEntityCache();
+    }
+
+    public static void RequestMainMenuFromEndScreen()
+    {
+        StopFromMenu();
+        SceneManager.LoadScene("Menu");
+    }
+
+    public static void RequestReplayFromEndScreen()
+    {
+        if (instance == null)
+        {
+            SceneManager.LoadScene("Menu");
+            return;
+        }
+
+        instance.RequestReplayToLobbyInternal();
+    }
+
+    public static int GetAlivePlayerHealthLines(string[] buffer)
+    {
+        if (buffer == null || buffer.Length == 0)
+        {
+            return 0;
+        }
+
+        int count = 0;
+        if (instance == null)
+        {
+            return count;
+        }
+
+        instance.AddAlivePlayerLine(buffer, ref count, instance.networkManager != null ? instance.networkManager.LocalClientId : 0, GetHealth01(instance.localPlayer));
+        foreach (KeyValuePair<ulong, RemotePlayer> remotePlayer in instance.remotePlayers)
+        {
+            instance.AddAlivePlayerLine(buffer, ref count, remotePlayer.Key, remotePlayer.Value.TargetHealth01);
+            if (count >= buffer.Length)
+            {
+                break;
+            }
+        }
+
+        return count;
     }
 
     public static bool TrySendItemPickup(Transform item)
@@ -650,6 +715,15 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         entityAuthorities.Clear();
         heldEntityOwners.Clear();
         activeWagonPushes.Clear();
+        hudReferencesResolved = false;
+        endUiButtonsBound = false;
+        hudRoot = null;
+        loseScreenRoot = null;
+        winScreenRoot = null;
+        deathHudRoot = null;
+        deathContextRoot = null;
+        endScreenShown = false;
+        roundEndWasWin = false;
 
         foreach (RemotePlayer remotePlayer in remotePlayers.Values)
         {
@@ -906,6 +980,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         bool jumpAirborne = GetJumpAirborne(body);
         HandPoseState handPose = GetHandPose(body);
         HeldEntityState heldEntity = GetHeldEntityState(localPlayer);
+        float health01 = GetHealth01(localPlayer);
         writer.WriteValueSafe(networkManager.LocalClientId);
         writer.WriteValueSafe(playerTransform.position);
         writer.WriteValueSafe(playerTransform.rotation);
@@ -914,6 +989,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         writer.WriteValueSafe(jumpSequence);
         writer.WriteValueSafe(jumpAirborne);
         writer.WriteValueSafe(skinIndex);
+        writer.WriteValueSafe(health01);
         WriteHandPose(writer, handPose);
         WriteHeldEntityState(writer, heldEntity);
         SendToPeers(PlayerStateMessage, writer);
@@ -1145,6 +1221,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         reader.ReadValueSafe(out int jumpSequence);
         reader.ReadValueSafe(out bool jumpAirborne);
         reader.ReadValueSafe(out int skinIndex);
+        reader.ReadValueSafe(out float health01);
         HandPoseState handPose = ReadHandPose(reader);
         HeldEntityState heldEntity = ReadHeldEntityState(reader);
 
@@ -1156,7 +1233,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         if (networkManager.IsServer)
         {
             heldEntity = GetServerApprovedHeldEntity(senderClientId, heldEntity);
-            RelayPlayerPayload(senderClientId, ownerClientId, position, rotation, pitch, cameraRotation, jumpSequence, jumpAirborne, skinIndex, handPose, heldEntity);
+            RelayPlayerPayload(senderClientId, ownerClientId, position, rotation, pitch, cameraRotation, jumpSequence, jumpAirborne, skinIndex, health01, handPose, heldEntity);
         }
 
         ApplyHeldEntityPayload(senderClientId, heldEntity);
@@ -1177,6 +1254,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         remotePlayer.TargetCameraRotation = cameraRotation;
         remotePlayer.TargetJumpSequence = jumpSequence;
         remotePlayer.TargetJumpAirborne = jumpAirborne;
+        remotePlayer.TargetHealth01 = health01;
         remotePlayer.TargetHands = handPose;
         remotePlayer.TargetHeldEntityKey = heldEntity.HasEntity ? heldEntity.Key : null;
         remotePlayer.TargetHeldEntityUseLiveHandPose = heldEntity.HasEntity && heldEntity.UseLiveHandPose;
@@ -1193,6 +1271,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         int jumpSequence,
         bool jumpAirborne,
         int skinIndex,
+        float health01,
         HandPoseState handPose,
         HeldEntityState heldEntity)
     {
@@ -1205,6 +1284,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         writer.WriteValueSafe(jumpSequence);
         writer.WriteValueSafe(jumpAirborne);
         writer.WriteValueSafe(skinIndex);
+        writer.WriteValueSafe(health01);
         WriteHandPose(writer, handPose);
         WriteHeldEntityState(writer, heldEntity);
 
@@ -1275,6 +1355,12 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
         if (!networkManager.IsServer)
         {
+            return;
+        }
+
+        if (intentType == IntentReplayToLobby)
+        {
+            ReturnReplayLobbyFromServer();
             return;
         }
 
@@ -1431,6 +1517,14 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 teamMoney = Mathf.Max(0, moneyValue);
                 SetRoundRemainingSeconds(remainingSeconds);
                 roundTimerForcedRed = true;
+                break;
+
+            case EventRoundEnd:
+                ApplyRoundEnd(moneyValue != 0, false);
+                break;
+
+            case EventReplayToLobby:
+                LoadMenuSceneForLobby();
                 break;
         }
     }
@@ -1759,6 +1853,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void SendStartGame(string sceneName)
     {
         string targetScene = string.IsNullOrWhiteSpace(sceneName) ? "SampleScene" : sceneName.Trim();
+        gameplaySeed = UnityEngine.Random.Range(1, int.MaxValue);
         if (networkManager != null
             && networkManager.IsListening
             && networkManager.IsServer
@@ -1770,6 +1865,8 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             pendingLocalSpawnSlot = GetLobbySlotForClient(networkManager.LocalClientId);
             pendingGameStartRealtime = Time.realtimeSinceStartup;
             gameOverTriggered = false;
+            endScreenShown = false;
+            roundEndWasWin = false;
             teamMoney = 0;
             roundTimerForcedRed = false;
 
@@ -1779,6 +1876,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
                 {
                     using FastBufferWriter writer = new FastBufferWriter(512, Allocator.Temp);
                     writer.WriteValueSafe(fixedSceneName);
+                    writer.WriteValueSafe(gameplaySeed);
                     WriteLobbyState(writer);
                     writer.WriteValueSafe(GetLobbySlotForClient(clientId));
                     networkManager.CustomMessagingManager.SendNamedMessage(StartGameMessage, clientId, writer, NetworkDelivery.ReliableSequenced);
@@ -1792,10 +1890,13 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void OnStartGameMessage(ulong senderClientId, FastBufferReader reader)
     {
         reader.ReadValueSafe(out FixedString128Bytes fixedSceneName);
+        reader.ReadValueSafe(out gameplaySeed);
         ReadLobbyState(reader);
         reader.ReadValueSafe(out pendingLocalSpawnSlot);
         pendingGameStartRealtime = Time.realtimeSinceStartup;
         gameOverTriggered = false;
+        endScreenShown = false;
+        roundEndWasWin = false;
         teamMoney = 0;
         roundTimerForcedRed = false;
         LoadGameplayScene(fixedSceneName.ToString());
@@ -1941,8 +2042,15 @@ public sealed class TinyNetcodeManager : MonoBehaviour
 
     private void OnGUI()
     {
-        if (networkManager == null || !networkManager.IsListening)
+        if (networkManager == null || !networkManager.IsListening || endScreenShown)
         {
+            return;
+        }
+
+        if (IsLocalPlayerDead())
+        {
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
             return;
         }
 
@@ -1967,8 +2075,40 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         style.fontSize = 24;
         style.fontStyle = FontStyle.Bold;
         style.alignment = TextAnchor.UpperLeft;
-        GUI.Label(new Rect(16f, 12f, 320f, 36f), "Argent equipe : " + teamMoney + " $", style);
+        GUI.Label(new Rect(28f, 21f, 220f, 36f), teamMoney + " $", style);
 
+        style.fontSize = previousFontSize;
+        style.fontStyle = previousFontStyle;
+        style.alignment = previousAlignment;
+    }
+
+    private void DrawAlivePlayersPanel()
+    {
+        List<string> lines = new List<string>(3);
+        AddAlivePlayerLine(lines, networkManager != null ? networkManager.LocalClientId : 0, GetHealth01(localPlayer));
+        foreach (KeyValuePair<ulong, RemotePlayer> remotePlayer in remotePlayers)
+        {
+            AddAlivePlayerLine(lines, remotePlayer.Key, remotePlayer.Value.TargetHealth01);
+        }
+
+        string text = lines.Count > 0 ? string.Join("\n", lines) : "Aucun joueur en vie";
+        Rect rect = new Rect(Screen.width - 330f, 86f, 285f, 104f);
+        GUIStyle boxStyle = GUI.skin.box;
+        GUI.Box(rect, GUIContent.none, boxStyle);
+
+        GUIStyle style = GUI.skin.label;
+        int previousFontSize = style.fontSize;
+        FontStyle previousFontStyle = style.fontStyle;
+        TextAnchor previousAlignment = style.alignment;
+        Color previousColor = GUI.color;
+
+        style.fontSize = 18;
+        style.fontStyle = FontStyle.Bold;
+        style.alignment = TextAnchor.UpperLeft;
+        GUI.color = Color.black;
+        GUI.Label(new Rect(rect.x + 14f, rect.y + 12f, rect.width - 28f, rect.height - 24f), text, style);
+
+        GUI.color = previousColor;
         style.fontSize = previousFontSize;
         style.fontStyle = previousFontStyle;
         style.alignment = previousAlignment;
@@ -1986,8 +2126,31 @@ public sealed class TinyNetcodeManager : MonoBehaviour
             return;
         }
 
-        gameOverTriggered = true;
-        TriggerLocalGameOverDeath();
+        if (networkManager != null && networkManager.IsListening && !networkManager.IsServer)
+        {
+            return;
+        }
+
+        ResolveRoundEnd();
+    }
+
+    private void UpdateAllPlayersDeadFailState()
+    {
+        if (gameOverTriggered
+            || pendingGameStartRealtime < 0f
+            || networkManager == null
+            || !networkManager.IsListening
+            || !networkManager.IsServer)
+        {
+            return;
+        }
+
+        if (HasAnyAlivePlayer())
+        {
+            return;
+        }
+
+        ApplyRoundEnd(false, true);
     }
 
     private float GetRoundRemainingSeconds()
@@ -2074,6 +2237,484 @@ public sealed class TinyNetcodeManager : MonoBehaviour
     private void TriggerLocalGameOverDeath()
     {
         localPlayer?.GetType().GetMethod("TriggerEndOfGameDeath")?.Invoke(localPlayer, null);
+    }
+
+    private void RequestReplayToLobbyInternal()
+    {
+        if (networkManager != null && networkManager.IsListening && networkManager.IsServer)
+        {
+            ReturnReplayLobbyFromServer();
+            return;
+        }
+
+        if (networkManager == null || !networkManager.IsListening || networkManager.CustomMessagingManager == null)
+        {
+            SceneManager.LoadScene("Menu");
+            return;
+        }
+
+        using FastBufferWriter writer = new FastBufferWriter(256, Allocator.Temp);
+        FixedString512Bytes fixedKey = string.Empty;
+        writer.WriteValueSafe(IntentReplayToLobby);
+        writer.WriteValueSafe(fixedKey);
+        writer.WriteValueSafe(Vector3.zero);
+        writer.WriteValueSafe(Quaternion.identity);
+        writer.WriteValueSafe(Vector3.zero);
+        writer.WriteValueSafe(0f);
+        writer.WriteValueSafe(Vector3.zero);
+        writer.WriteValueSafe(Quaternion.identity);
+        networkManager.CustomMessagingManager.SendNamedMessage(WorldIntentMessage, NetworkManager.ServerClientId, writer, NetworkDelivery.ReliableSequenced);
+    }
+
+    private void ReturnReplayLobbyFromServer()
+    {
+        if (networkManager == null || !networkManager.IsListening || !networkManager.IsServer)
+        {
+            return;
+        }
+
+        BroadcastWorldEvent(EventReplayToLobby, string.Empty, 0, 0f, NetworkDelivery.ReliableSequenced);
+        LoadMenuSceneForLobby();
+    }
+
+    private void LoadMenuSceneForLobby()
+    {
+        gameOverTriggered = false;
+        endScreenShown = false;
+        pendingGameStartRealtime = -1f;
+        roundTimerForcedRed = false;
+        SceneManager.LoadScene("Menu");
+    }
+
+    private void ResolveRoundEnd()
+    {
+        if (gameOverTriggered)
+        {
+            return;
+        }
+
+        bool win = IsAnyPlayerInMatchingSpawnBox();
+        ApplyRoundEnd(win, true);
+    }
+
+    private void ApplyRoundEnd(bool win, bool broadcast)
+    {
+        if (endScreenShown)
+        {
+            return;
+        }
+
+        gameOverTriggered = true;
+        endScreenShown = true;
+        roundEndWasWin = win;
+        if (!win)
+        {
+            TriggerAllPlayersEndDeath();
+        }
+
+        FreezeAllPlayersForEndScreen();
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
+        UpdateGameplayHudVisibility();
+
+        if (broadcast)
+        {
+            BroadcastWorldEvent(EventRoundEnd, string.Empty, win ? 1 : 0, 0f, NetworkDelivery.ReliableSequenced);
+        }
+    }
+
+    private bool IsAnyPlayerInMatchingSpawnBox()
+    {
+        TinySpawnBox[] spawnBoxes = FindObjectsByType<TinySpawnBox>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+        if (spawnBoxes == null || spawnBoxes.Length == 0)
+        {
+            return false;
+        }
+
+        Component[] players = FindComponentsByTypeName("TinyFirstPersonController");
+        for (int i = 0; i < players.Length; i++)
+        {
+            Component player = players[i];
+            if (player == null || GetPlayerIsDead(player))
+            {
+                continue;
+            }
+
+            Component body = player.GetComponent("TinyRaymanBody");
+            if (body == null)
+            {
+                continue;
+            }
+
+            int skinIndex = GetCurrentSkinIndex(body);
+            for (int boxIndex = 0; boxIndex < spawnBoxes.Length; boxIndex++)
+            {
+                TinySpawnBox spawnBox = spawnBoxes[boxIndex];
+                bool isMatchingSpawnBox = spawnBox != null
+                    && spawnBox.gameObject.activeInHierarchy
+                    && spawnBox.WasPreparedForSpawn
+                    && spawnBox.MatchesSpawnedSkin(skinIndex);
+                if (spawnBox != null
+                    && isMatchingSpawnBox
+                    && spawnBox.ContainsPlayer(player.transform))
+                {
+                    Debug.Log($"Tiny round end: player {player.name} skin {skinIndex} is safe in spawn box {spawnBox.name}.");
+                    return true;
+                }
+            }
+        }
+
+        Debug.Log("Tiny round end: no living player was inside their prepared spawn box.");
+        return false;
+    }
+
+    private bool HasAnyAlivePlayer()
+    {
+        Component[] players = FindComponentsByTypeName("TinyFirstPersonController");
+        for (int i = 0; i < players.Length; i++)
+        {
+            if (players[i] != null && !GetPlayerIsDead(players[i]))
+            {
+                return true;
+            }
+        }
+
+        foreach (RemotePlayer remotePlayer in remotePlayers.Values)
+        {
+            if (remotePlayer != null && remotePlayer.TargetHealth01 > 0.001f)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void TriggerAllPlayersEndDeath()
+    {
+        Component[] players = FindComponentsByTypeName("TinyFirstPersonController");
+        for (int i = 0; i < players.Length; i++)
+        {
+            players[i]?.GetType().GetMethod("TriggerEndOfGameDeath")?.Invoke(players[i], null);
+        }
+    }
+
+    private void FreezeAllPlayersForEndScreen()
+    {
+        Component[] players = FindComponentsByTypeName("TinyFirstPersonController");
+        for (int i = 0; i < players.Length; i++)
+        {
+            players[i]?.GetType().GetMethod("FreezeForEndScreen")?.Invoke(players[i], null);
+        }
+    }
+
+    private void UpdateGameplayHudVisibility()
+    {
+        RefreshGameplayHudReferences();
+        if (hudRoot == null && loseScreenRoot == null && winScreenRoot == null && deathHudRoot == null)
+        {
+            return;
+        }
+
+        bool localDead = IsLocalPlayerDead();
+        SetActiveIfDifferent(winScreenRoot, endScreenShown && roundEndWasWin);
+        SetActiveIfDifferent(loseScreenRoot, endScreenShown && !roundEndWasWin);
+        SetActiveIfDifferent(hudRoot, !endScreenShown && !localDead);
+        SetActiveIfDifferent(deathHudRoot, !endScreenShown && localDead);
+        UpdateAlivePlayersText(!endScreenShown && localDead);
+    }
+
+    private void RefreshGameplayHudReferences()
+    {
+        if (hudReferencesResolved)
+        {
+            return;
+        }
+
+        hudRoot = FindSceneGameObjectByTrimmedName("HUD");
+        loseScreenRoot = FindSceneGameObjectByTrimmedName("LoseScreen");
+        winScreenRoot = FindSceneGameObjectByTrimmedName("WinScreen");
+        deathHudRoot = FindSceneGameObjectByTrimmedName("DeathHUD");
+        hudReferencesResolved = true;
+        BindEndUiButtons();
+    }
+
+    private void BindEndUiButtons()
+    {
+        if (endUiButtonsBound)
+        {
+            return;
+        }
+
+        AddEndButtonListener(deathHudRoot, "Fermer", HideDeathContextPanel);
+        AddEndButtonListener(deathHudRoot, "Fermer et ne plus afficher", HideDeathContextPanel);
+        AddEndButtonListener(loseScreenRoot, "Menu", RequestMainMenuFromEndScreen);
+        AddEndButtonListener(winScreenRoot, "Menu", RequestMainMenuFromEndScreen);
+        AddEndButtonListener(loseScreenRoot, "Rejouer", RequestReplayFromEndScreen);
+        AddEndButtonListener(winScreenRoot, "Rejouer", RequestReplayFromEndScreen);
+        BindResultScreenButtonsByFallback(loseScreenRoot);
+        BindResultScreenButtonsByFallback(winScreenRoot);
+        BindDeathHudCloseButtonsByFallback();
+
+        Component contextTitle = FindTextComponentContaining(deathHudRoot, "Mode Spectateur");
+        if (contextTitle != null)
+        {
+            deathContextRoot = contextTitle.transform.parent != null
+                ? contextTitle.transform.parent.gameObject
+                : contextTitle.gameObject;
+        }
+
+        endUiButtonsBound = true;
+    }
+
+    private void BindResultScreenButtonsByFallback(GameObject root)
+    {
+        if (root == null)
+        {
+            return;
+        }
+
+        Button[] buttons = root.GetComponentsInChildren<Button>(true);
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            string label = GetButtonText(buttons[i]);
+            if (label.IndexOf("Rejouer", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                buttons[i].onClick.AddListener(RequestReplayFromEndScreen);
+            }
+            else if (label.IndexOf("Menu", StringComparison.OrdinalIgnoreCase) >= 0 || buttons.Length == 2)
+            {
+                buttons[i].onClick.AddListener(RequestMainMenuFromEndScreen);
+            }
+        }
+    }
+
+    private void BindDeathHudCloseButtonsByFallback()
+    {
+        if (deathHudRoot == null)
+        {
+            return;
+        }
+
+        Button[] buttons = deathHudRoot.GetComponentsInChildren<Button>(true);
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            string label = GetButtonText(buttons[i]);
+            if (label.IndexOf("Fermer", StringComparison.OrdinalIgnoreCase) >= 0 || buttons.Length <= 2)
+            {
+                buttons[i].onClick.AddListener(HideDeathContextPanel);
+            }
+        }
+    }
+
+    private void HideDeathContextPanel()
+    {
+        if (deathContextRoot != null)
+        {
+            deathContextRoot.SetActive(false);
+        }
+    }
+
+    private void UpdateAlivePlayersText(bool visible)
+    {
+    }
+
+    private void AddAlivePlayerLine(List<string> lines, ulong clientId, float health01)
+    {
+        if (lines.Count >= 3 || health01 <= 0.001f)
+        {
+            return;
+        }
+
+        int slot = GetLobbySlotForClient(clientId);
+        string playerName = slot >= 0 ? "Joueur " + (slot + 1) : "Joueur";
+        lines.Add(playerName + " : " + Mathf.RoundToInt(Mathf.Clamp01(health01) * 100f) + "%");
+    }
+
+    private void AddAlivePlayerLine(string[] lines, ref int count, ulong clientId, float health01)
+    {
+        if (lines == null || count >= lines.Length || health01 <= 0.001f)
+        {
+            return;
+        }
+
+        int slot = GetLobbySlotForClient(clientId);
+        string playerName = slot >= 0 ? "Joueur " + (slot + 1) : "Joueur";
+        lines[count++] = playerName + " : " + Mathf.RoundToInt(Mathf.Clamp01(health01) * 100f) + "%";
+    }
+
+    private bool IsLocalPlayerDead()
+    {
+        return localPlayer != null && GetPlayerIsDead(localPlayer);
+    }
+
+    private static bool GetPlayerIsDead(Component player)
+    {
+        if (player == null)
+        {
+            return false;
+        }
+
+        object value = player.GetType().GetProperty("IsDead")?.GetValue(player);
+        return value is bool isDead && isDead;
+    }
+
+    private static int GetCurrentSkinIndex(Component body)
+    {
+        if (body == null)
+        {
+            return -1;
+        }
+
+        object value = body.GetType().GetProperty("CurrentSkinIndex")?.GetValue(body);
+        return value is int skinIndex ? skinIndex : -1;
+    }
+
+    private static float GetHealth01(Component controller)
+    {
+        if (controller == null)
+        {
+            return 0f;
+        }
+
+        object value = controller.GetType().GetProperty("Health01")?.GetValue(controller);
+        return value is float health01 ? Mathf.Clamp01(health01) : 1f;
+    }
+
+    private static void AddEndButtonListener(GameObject root, string label, UnityEngine.Events.UnityAction action)
+    {
+        Button button = FindButtonByText(root, label);
+        if (button != null)
+        {
+            button.onClick.RemoveListener(action);
+            button.onClick.AddListener(action);
+        }
+    }
+
+    private static Button FindButtonByText(GameObject root, string label)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(label))
+        {
+            return null;
+        }
+
+        Button[] buttons = root.GetComponentsInChildren<Button>(true);
+        for (int i = 0; i < buttons.Length; i++)
+        {
+            string buttonText = GetButtonText(buttons[i]);
+            if (string.Equals(buttonText, label, StringComparison.OrdinalIgnoreCase))
+            {
+                return buttons[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static string GetButtonText(Button button)
+    {
+        if (button == null)
+        {
+            return string.Empty;
+        }
+
+        Component[] components = button.GetComponentsInChildren<Component>(true);
+        for (int i = 0; i < components.Length; i++)
+        {
+            string text = GetTextComponentValue(components[i]);
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                return text.Trim();
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static Component FindTextComponentContaining(GameObject root, string fragment)
+    {
+        if (root == null || string.IsNullOrWhiteSpace(fragment))
+        {
+            return null;
+        }
+
+        Component[] components = root.GetComponentsInChildren<Component>(true);
+        for (int i = 0; i < components.Length; i++)
+        {
+            string text = GetTextComponentValue(components[i]);
+            if (!string.IsNullOrWhiteSpace(text)
+                && text.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return components[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static string GetTextComponentValue(Component component)
+    {
+        if (component == null)
+        {
+            return string.Empty;
+        }
+
+        Type type = component.GetType();
+        if (type.Name != "TextMeshProUGUI" && type.Name != "TMP_Text" && type.Name != "Text")
+        {
+            return string.Empty;
+        }
+
+        object value = type.GetProperty("text")?.GetValue(component);
+        return value as string ?? string.Empty;
+    }
+
+    private static void SetActiveIfDifferent(GameObject target, bool active)
+    {
+        if (target != null && target.activeSelf != active)
+        {
+            target.SetActive(active);
+        }
+    }
+
+    private static GameObject FindSceneGameObjectByTrimmedName(string objectName)
+    {
+        Scene activeScene = SceneManager.GetActiveScene();
+        GameObject[] roots = activeScene.GetRootGameObjects();
+        for (int i = 0; i < roots.Length; i++)
+        {
+            GameObject result = FindChildByTrimmedName(roots[i].transform, objectName);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    private static GameObject FindChildByTrimmedName(Transform root, string objectName)
+    {
+        if (root == null)
+        {
+            return null;
+        }
+
+        if (string.Equals(root.name.Trim(), objectName, StringComparison.OrdinalIgnoreCase))
+        {
+            return root.gameObject;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            GameObject result = FindChildByTrimmedName(root.GetChild(i), objectName);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
     }
 
     private void ProcessServerWagonPushes()
@@ -2681,6 +3322,7 @@ public sealed class TinyNetcodeManager : MonoBehaviour
         public Quaternion TargetCameraRotation;
         public int TargetJumpSequence;
         public bool TargetJumpAirborne;
+        public float TargetHealth01 = 1f;
         public HandPoseState TargetHands;
         public string TargetHeldEntityKey;
         public bool TargetHeldEntityUseLiveHandPose;
