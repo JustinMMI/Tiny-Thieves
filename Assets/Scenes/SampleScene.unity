@@ -2979,7 +2979,7 @@ MonoBehaviour:
   m_OverrideTileSize: 0
   m_TileSize: 256
   m_OverrideVoxelSize: 0
-  m_VoxelSize: 0.16666667
+  m_VoxelSize: 0.1
   m_MinRegionArea: 2
   m_NavMeshData: {fileID: 23800000, guid: 0e06cd46eb29a5149a1c26cee126c8c5, type: 2}
   m_BuildHeightMesh: 0
@@ -13189,17 +13189,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 98fc8cc20842b3c408d9acb4e94d1955, type: 3}
   m_Name: 
   m_EditorClassIdentifier: '::'
-  damage: 100
+  damage: 50
   detectionRange: 6
-  damageRange: 1
-  stoppingDistance: 1
   obstacleMask:
     serializedVersion: 2
     m_Bits: 0
   loseSightTime: 5
-  damageCooldown: 1
-  chaseSpeed: 2
-  wanderSpeed: 1.5
   wanderRadius: 5
   wanderTimer: 3
 --- !u!65 &665088374
