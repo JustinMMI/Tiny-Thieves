@@ -75,7 +75,8 @@ Shader "Custom/UIBlur"
                     {
                         // Simple triangular weight: centre is heavier.
                         float w = (half_n + 1 - abs(x)) * (half_n + 1 - abs(y));
-                        color  += SampleSceneColor(uv + float2(x, y) * texelSize) * w;
+                        half3 sampleColor = SampleSceneColor(uv + float2(x, y) * texelSize);
+                        color += half4(sampleColor, 1.0h) * w;
                         weight += w;
                     }
                 }

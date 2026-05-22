@@ -169,6 +169,7 @@ public sealed class TinyRaymanBody : MonoBehaviour
     public Vector3 HitboxLocalOffset => characterModel != null
         ? new Vector3(characterModelLocalPosition.x, 0f, characterModelLocalPosition.z)
         : Vector3.zero;
+    public int CurrentSkinIndex => (int)selectedSkin;
 
     private void Awake()
     {

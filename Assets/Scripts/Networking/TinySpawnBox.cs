@@ -24,10 +24,50 @@ public sealed class TinySpawnBox : MonoBehaviour
     private Coroutine openRoutine;
     private bool opened;
     private bool canOpen;
+    private bool wasPreparedForSpawn;
     private float partyStartRealtime = -1f;
     private Collider triggerCollider;
 
-    public int PlayerSkinIndex => (int)boxSkin;
+    public int PlayerSkinIndex => Mathf.Clamp(playerSkinIndex, 0, 3);
+    public bool WasPreparedForSpawn => wasPreparedForSpawn;
+
+    public bool MatchesSpawnedSkin(int skinIndex)
+    {
+        int clampedSkin = Mathf.Clamp(skinIndex, 0, 3);
+        return wasPreparedForSpawn
+            ? playerSkinIndex == clampedSkin
+            : PlayerSkinIndex == clampedSkin;
+    }
+
+    public bool ContainsPlayer(Transform player)
+    {
+        if (player == null)
+        {
+            return false;
+        }
+
+        if (triggerCollider == null)
+        {
+            triggerCollider = GetComponent<Collider>();
+        }
+
+        if (triggerCollider == null)
+        {
+            return false;
+        }
+
+        CharacterController characterController = player.GetComponent<CharacterController>();
+        if (characterController != null)
+        {
+            Vector3 worldCenter = player.TransformPoint(characterController.center);
+            float halfHeight = Mathf.Max(0f, characterController.height * 0.5f - characterController.radius);
+            Vector3 top = worldCenter + Vector3.up * halfHeight;
+            Vector3 bottom = worldCenter - Vector3.up * halfHeight;
+            return ContainsPoint(worldCenter) || ContainsPoint(top) || ContainsPoint(bottom);
+        }
+
+        return ContainsPoint(player.position);
+    }
 
     private void Reset()
     {
@@ -56,9 +96,10 @@ public sealed class TinySpawnBox : MonoBehaviour
 
     public void PrepareForSpawn(int skinIndex, int playerSlot, float gameStartRealtime)
     {
-        playerSkinIndex = skinIndex;
+        playerSkinIndex = Mathf.Clamp(skinIndex, 0, 3);
         opened = false;
         canOpen = true;
+        wasPreparedForSpawn = true;
         partyStartRealtime = gameStartRealtime >= 0f ? gameStartRealtime : Time.realtimeSinceStartup;
         SetTriggerColliderEnabled(!openAutomaticallyAfterSpawn);
 
@@ -78,6 +119,7 @@ public sealed class TinySpawnBox : MonoBehaviour
 
         opened = false;
         canOpen = false;
+        wasPreparedForSpawn = false;
         partyStartRealtime = -1f;
         SetTriggerColliderEnabled(false);
 
@@ -143,6 +185,26 @@ public sealed class TinySpawnBox : MonoBehaviour
         {
             triggerCollider.enabled = enabled;
         }
+    }
+
+    private bool ContainsPoint(Vector3 point)
+    {
+        if (triggerCollider == null)
+        {
+            return false;
+        }
+
+        if (triggerCollider is BoxCollider boxCollider)
+        {
+            Vector3 localPoint = boxCollider.transform.InverseTransformPoint(point) - boxCollider.center;
+            Vector3 halfSize = boxCollider.size * 0.5f + Vector3.one * 0.03f;
+            return Mathf.Abs(localPoint.x) <= halfSize.x
+                && Mathf.Abs(localPoint.y) <= halfSize.y
+                && Mathf.Abs(localPoint.z) <= halfSize.z;
+        }
+
+        Vector3 closestPoint = triggerCollider.ClosestPoint(point);
+        return (closestPoint - point).sqrMagnitude <= 0.0004f;
     }
 
     private static bool IsPlayerCollider(Collider other)

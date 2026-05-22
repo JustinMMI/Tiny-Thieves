@@ -104,7 +104,14 @@ public sealed class TinyMenuUI : MonoBehaviour
         BindButtons();
         EnsureNavigationManager();
         InitSettingsManager();
-        ShowMainMenu();
+        if (TinyNetcodeManager.IsClientConnected)
+        {
+            ShowLobby();
+        }
+        else
+        {
+            ShowMainMenu();
+        }
     }
 
     private void EnsureNavigationManager()
