@@ -9,7 +9,7 @@ EditorBuildSettings:
     path: Assets/Scenes/Menu.unity
     guid: 2b8bf86fddfac854c8defb60602a2c2e
   - enabled: 1
-    path: Assets/Scenes/SampleSceneCopyEliott.unity
-    guid: 99c9720ab356a0642a771bea13969a05
+    path: Assets/Scenes/SampleScene.unity
+    guid: ceceb070f3261064f8f362101ee98c49
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
