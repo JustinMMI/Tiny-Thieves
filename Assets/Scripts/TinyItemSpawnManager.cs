@@ -18,7 +18,9 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
     [SerializeField] private Transform itemTemplateRoot;
     [SerializeField] private ItemEntry[] itemTable = Array.Empty<ItemEntry>();
     [SerializeField] private bool autoCollectTemplatesFromRoot = true;
+    [SerializeField] private bool collectSceneTemplatesIfRootEmpty = true;
     [SerializeField] private bool hideTemplatesOnStart = true;
+    [SerializeField] private bool logSpawnSummary = true;
 
     [Header("Spawn")]
     [SerializeField] private TinyItemSpawnZone[] spawnZones = Array.Empty<TinyItemSpawnZone>();
@@ -75,6 +77,7 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
 
         System.Random random = new System.Random(seed);
         Dictionary<TinyItem, int> spawnedCountByTemplate = new Dictionary<TinyItem, int>();
+        int skippedEmptyZones = 0;
         for (int zoneIndex = 0; zoneIndex < spawnZones.Length; zoneIndex++)
         {
             TinyItemSpawnZone zone = spawnZones[zoneIndex];
@@ -85,6 +88,7 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
 
             if (random.NextDouble() < zone.EmptyChance)
             {
+                skippedEmptyZones++;
                 continue;
             }
 
@@ -109,6 +113,10 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
         }
 
         TinyNetcodeManager.RebuildSyncedEntitiesNow();
+        if (logSpawnSummary)
+        {
+            Debug.Log($"Tiny item spawn: {spawnedItems.Count} items spawned from {GetValidEntryCount()} templates across {GetValidZoneCount()} zones ({skippedEmptyZones} empty rolls).", this);
+        }
     }
 
     [ContextMenu("Refresh Item Table From Root")]
@@ -195,6 +203,11 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
             }
 
             TinyItem[] templates = itemTemplateRoot.GetComponentsInChildren<TinyItem>(true);
+            if (templates.Length == 0 && collectSceneTemplatesIfRootEmpty)
+            {
+                templates = FindObjectsByType<TinyItem>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            }
+
             Array.Sort(templates, (left, right) => CompareComponentsByHierarchyPath(left, right));
             itemTable = new ItemEntry[templates.Length];
             for (int i = 0; i < templates.Length; i++)
@@ -214,6 +227,44 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
                 }
             }
         }
+    }
+
+    private int GetValidEntryCount()
+    {
+        int count = 0;
+        if (itemTable == null)
+        {
+            return count;
+        }
+
+        for (int i = 0; i < itemTable.Length; i++)
+        {
+            if (itemTable[i] != null && itemTable[i].Template != null)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private int GetValidZoneCount()
+    {
+        int count = 0;
+        if (spawnZones == null)
+        {
+            return count;
+        }
+
+        for (int i = 0; i < spawnZones.Length; i++)
+        {
+            if (spawnZones[i] != null)
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     private void SetTemplatesVisible(bool visible)
