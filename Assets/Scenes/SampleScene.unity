@@ -13191,10 +13191,15 @@ MonoBehaviour:
   m_EditorClassIdentifier: '::'
   damage: 100
   detectionRange: 6
+  damageRange: 1
+  stoppingDistance: 1
   obstacleMask:
     serializedVersion: 2
     m_Bits: 0
   loseSightTime: 5
+  damageCooldown: 1
+  chaseSpeed: 2
+  wanderSpeed: 1.5
   wanderRadius: 5
   wanderTimer: 3
 --- !u!65 &665088374
