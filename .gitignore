@@ -122,3 +122,16 @@ InitTestScene*.unity*
 *.vsix
 Assets/Scenes/Minigames/PenduBob.unity
 relay_join_code.txt
+Assets/UI/BG Anims MainMenu.zip
+Assets/UI/BG Anims MainMenu/COUPE.gif
+Assets/UI/BG Anims MainMenu/COURIR.gif
+Assets/UI/BG Anims MainMenu/COUPE.mp4
+Assets/UI/BG Anims MainMenu/COURIR.mp4
+Assets/UI/BG Anims MainMenu/JUMP.gif
+Assets/UI/BG Anims MainMenu/JUMP.mp4
+Assets/UI/BG Anims MainMenu/juste les persos/coupe.mp4
+Assets/UI/BG Anims MainMenu/juste les persos/courir.mp4
+Assets/UI/BG Anims MainMenu/juste les persos/jump.mp4
+Assets/UI/BG Anims MainMenu/juste les persos/wagon.mp4
+Assets/UI/BG Anims MainMenu/WAGON.gif
+Assets/UI/BG Anims MainMenu/WAGON.mp4
