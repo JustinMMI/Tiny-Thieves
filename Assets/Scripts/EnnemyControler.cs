@@ -5,16 +5,9 @@ public class EnnemyControler : MonoBehaviour
 {
     [Header("Stats")]
     [SerializeField] private int damage = 25;
-    [SerializeField] private float detectionRange = 8f;
-    [SerializeField] private float damageRange = 1.2f;
-    [SerializeField] private float stoppingDistance = 0f;
+    [SerializeField] private float detectionRange = 2f;
     [SerializeField] private LayerMask obstacleMask;
     [SerializeField] private float loseSightTime = 5f;
-    [SerializeField] private float damageCooldown = 1f;
-
-    [Header("Vitesse")]
-    [SerializeField] private float chaseSpeed = 3.5f;
-    [SerializeField] private float wanderSpeed = 2f;
 
     [Header("Mouvement Aléatoire")]
     [SerializeField] private float wanderRadius = 8f;
@@ -23,29 +16,17 @@ public class EnnemyControler : MonoBehaviour
     private NavMeshAgent m_Agent;
     private Animator m_Animator;
     private Transform m_Player;
-    private TinyFirstPersonController m_PlayerController;
     private float m_Timer;
     private float m_LostSightTimer;
-    private float m_DamageCooldownTimer;
     private bool m_IsChasing;
-
-    /// <summary>Last known player position when line of sight was lost.</summary>
-    private Vector3 m_LastKnownPlayerPos;
 
     void Start()
     {
         m_Agent = GetComponent<NavMeshAgent>();
         m_Animator = GetComponent<Animator>();
 
-        m_Agent.stoppingDistance = stoppingDistance;
-        m_Agent.speed = wanderSpeed;
-
         GameObject playerObj = GameObject.FindGameObjectWithTag("Player");
-        if (playerObj != null)
-        {
-            m_Player = playerObj.transform;
-            m_PlayerController = playerObj.GetComponent<TinyFirstPersonController>();
-        }
+        if (playerObj != null) m_Player = playerObj.transform;
 
         m_Timer = wanderTimer;
     }
@@ -54,32 +35,24 @@ public class EnnemyControler : MonoBehaviour
     {
         if (m_Player == null) return;
 
-        if (m_DamageCooldownTimer > 0f)
-            m_DamageCooldownTimer -= Time.deltaTime;
-
         float distanceToPlayer = Vector3.Distance(transform.position, m_Player.position);
 
         if (distanceToPlayer <= detectionRange && HasLineOfSight())
         {
-            // Joueur détecté — on mémorise sa position et on le poursuit
-            m_LastKnownPlayerPos = m_Player.position;
             m_IsChasing = true;
             m_LostSightTimer = 0f;
-            m_Agent.speed = chaseSpeed;
             if (m_Animator != null) m_Animator.SetBool("isAttacking", true);
             m_Agent.SetDestination(m_Player.position);
         }
         else if (m_IsChasing)
         {
-            // On a perdu la vision — on va à la dernière position connue
             m_LostSightTimer += Time.deltaTime;
-            m_Agent.SetDestination(m_LastKnownPlayerPos);
+            m_Agent.SetDestination(m_Player.position);
 
             if (m_LostSightTimer >= loseSightTime)
             {
                 m_IsChasing = false;
                 m_LostSightTimer = 0f;
-                m_Agent.speed = wanderSpeed;
                 if (m_Animator != null) m_Animator.SetBool("isAttacking", false);
                 m_Timer = wanderTimer;
                 m_Agent.ResetPath();
@@ -93,11 +66,6 @@ public class EnnemyControler : MonoBehaviour
         if (m_Animator != null)
         {
             m_Animator.SetBool("isWalking", m_Agent.velocity.magnitude > 0.1f);
-        }
-
-        if (m_IsChasing && distanceToPlayer <= damageRange)
-        {
-            TryDealDamage();
         }
     }
 
@@ -158,40 +126,11 @@ public class EnnemyControler : MonoBehaviour
 
     private void OnTriggerEnter(Collider other)
     {
-        TryDealDamageCollider(other);
-    }
-
-    private void OnTriggerStay(Collider other)
-    {
-        TryDealDamageCollider(other);
-    }
-
-    /// <summary>Inflige des dégâts via check de distance dans Update, avec cooldown.</summary>
-    private void TryDealDamage()
-    {
-        if (m_DamageCooldownTimer > 0f) return;
-        if (m_PlayerController == null) return;
-
-        m_PlayerController.TakeDamage(damage);
-        m_DamageCooldownTimer = damageCooldown;
-        Debug.Log($"[EnnemyControler] Dégâts infligés : {damage}");
-    }
-
-    /// <summary>Fallback trigger-based damage si un collider trigger est ajouté ultérieurement.</summary>
-    private void TryDealDamageCollider(Collider other)
-    {
-        if (m_DamageCooldownTimer > 0f) return;
-        if (!other.CompareTag("Player")) return;
-
-        TinyFirstPersonController controller = other.GetComponent<TinyFirstPersonController>();
-        if (controller == null)
-            controller = other.GetComponentInParent<TinyFirstPersonController>();
-
-        if (controller != null)
+        PlayerHealth health = other.GetComponent<PlayerHealth>();
+        if (health != null)
         {
-            controller.TakeDamage(damage);
-            m_DamageCooldownTimer = damageCooldown;
-            Debug.Log($"[EnnemyControler] Dégâts (trigger) infligés : {damage}");
+            health.SubPV(damage);
+            Debug.Log("Touché !");
         }
     }
 }
