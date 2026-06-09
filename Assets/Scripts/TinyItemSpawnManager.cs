@@ -19,7 +19,7 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
     [SerializeField] private ItemEntry[] itemTable = Array.Empty<ItemEntry>();
     [SerializeField] private bool autoCollectTemplatesFromRoot = true;
     [SerializeField] private bool collectSceneTemplatesIfRootEmpty = true;
-    [SerializeField] private bool hideTemplatesOnStart = true;
+    [SerializeField] private bool hideTemplatesOnStart;
     [SerializeField] private bool logSpawnSummary = true;
 
     [Header("Spawn")]
@@ -64,10 +64,7 @@ public sealed class TinyItemSpawnManager : MonoBehaviour
             ClearSpawnedItems();
         }
 
-        if (hideTemplatesOnStart)
-        {
-            SetTemplatesVisible(false);
-        }
+        hideTemplatesOnStart = false;
 
         int seed = TinyNetcodeManager.CurrentGameplaySeed;
         if (seed == 0)
