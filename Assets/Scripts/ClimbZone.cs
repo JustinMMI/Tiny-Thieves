@@ -354,11 +354,6 @@ public sealed class ClimbZone : MonoBehaviour
 
     private void OnDrawGizmosSelected()
     {
-        DrawGizmosDebug(
-            new Color(0.1f, 0.65f, 1f, 0.22f),
-            new Color(0.1f, 0.65f, 1f, 0.9f),
-            new Color(0.2f, 1f, 0.45f, 0.22f),
-            new Color(0.2f, 1f, 0.45f, 0.9f));
     }
 
     public void DrawGizmosDebug(Color climbFill, Color climbWire, Color landingFill, Color landingWire)
